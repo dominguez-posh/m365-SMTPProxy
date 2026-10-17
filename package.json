@@ -10,11 +10,14 @@
     "start": "node server/dist/server.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p server",
     "test:server": "node tools/test-server.mjs",
-    "reset-password": "node server/dist/server.mjs reset-password"
+    "reset-password": "node server/dist/server.mjs reset-password",
+    "reset-mfa": "node server/dist/server.mjs reset-mfa"
   },
   "dependencies": {
+    "qrcode-generator": "2.0.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "react-icons": "5.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

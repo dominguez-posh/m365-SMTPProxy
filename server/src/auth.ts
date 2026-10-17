@@ -54,25 +54,35 @@ export function verifySignature(publicKeyB64: string, text: string, signatureB64
 const SESSION_TTL = 12 * 60 * 60 * 1000;
 const IDLE_TTL = Math.max(5, Number(process.env.SMTPPROXY_IDLE_MINUTES ?? 30)) * 60 * 1000;
 
+/** a session after the password but before the second factor is valid for at most 15 minutes */
+const MFA_PENDING_TTL = 15 * 60 * 1000;
+
 export class Sessions {
-  private map = new Map<string, { userId: string; created: number; seen: number }>();
-  create(userId: string) {
+  private map = new Map<string, { userId: string; created: number; seen: number; mfa: boolean }>();
+  /** mfa: the second factor is confirmed (otherwise only the MFA steps are allowed) */
+  create(userId: string, mfa = false) {
     const t = token(32);
-    this.map.set(sha256(t), { userId, created: Date.now(), seen: Date.now() });
+    this.map.set(sha256(t), { userId, created: Date.now(), seen: Date.now(), mfa });
     return t;
   }
-  check(t: string | undefined): string | null {
+  /** user id and MFA state of a valid session */
+  info(t: string | undefined): { userId: string; mfa: boolean } | null {
     if (!t) return null;
     const k = sha256(t);
     const s = this.map.get(k);
     if (!s) return null;
     const now = Date.now();
-    if (now - s.created > SESSION_TTL || now - s.seen > IDLE_TTL) {
+    if (now - s.created > SESSION_TTL || now - s.seen > IDLE_TTL || (!s.mfa && now - s.created > MFA_PENDING_TTL)) {
       this.map.delete(k);
       return null;
     }
     s.seen = now;
-    return s.userId;
+    return { userId: s.userId, mfa: s.mfa };
+  }
+  /** second factor confirmed: the session gets full access */
+  setMfa(t: string | undefined) {
+    const s = t ? this.map.get(sha256(t)) : undefined;
+    if (s) s.mfa = true;
   }
   destroy(t: string | undefined) {
     if (t) this.map.delete(sha256(t));

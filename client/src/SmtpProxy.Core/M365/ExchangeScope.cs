@@ -23,7 +23,7 @@ public static class ExchangeScope
     public static string GroupAlias(string host) => $"smtpproxy-{host.ToLowerInvariant()}";
     public static string ScopeName(string appId) => $"M365 SMTP Proxy {appId}";
 
-    public static async Task<ExchangeScopeResult> ApplyAsync(ProxyConfig c, CancellationToken ct)
+    public static async Task<ExchangeScopeResult> ApplyAsync(ProxyConfig c, Action<string> progress, CancellationToken ct)
     {
         var dir = Path.Combine(Path.GetTempPath(), $"smtpproxy-exo-{Guid.NewGuid():N}");
         Directory.CreateDirectory(dir);
@@ -32,6 +32,7 @@ public static class ExchangeScope
             var input = Path.Combine(dir, "input.json");
             var output = Path.Combine(dir, "result.json");
             var script = Path.Combine(dir, "exchange-scope.ps1");
+            var log = Path.Combine(dir, "progress.log");
             JsonFile.Write(input, new
             {
                 appId = c.M365.ClientId,
@@ -46,12 +47,32 @@ public static class ExchangeScope
             // Windows PowerShell 5.1 reads scripts without BOM as ANSI
             await File.WriteAllTextAsync(script, Script, new UTF8Encoding(true), ct);
 
+            // no window: the sign-in opens in the browser, progress lines go to progress.log and into the GUI
             using var p = Process.Start(new ProcessStartInfo("powershell.exe",
-                $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\" -InputFile \"{input}\" -OutputFile \"{output}\"")
-            { UseShellExecute = true }) ?? throw new InvalidOperationException("Windows PowerShell konnte nicht gestartet werden.");
-            await p.WaitForExitAsync(ct);
+                $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" -InputFile \"{input}\" -OutputFile \"{output}\" -LogFile \"{log}\"")
+            { UseShellExecute = false, CreateNoWindow = true }) ?? throw new InvalidOperationException("Windows PowerShell konnte nicht gestartet werden.");
+            var shown = 0;
+            void Tail()
+            {
+                try
+                {
+                    if (!File.Exists(log)) return;
+                    using var fs = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    var lines = new StreamReader(fs).ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    for (; shown < lines.Length; shown++) progress(lines[shown].TrimEnd('\r'));
+                }
+                catch (IOException) { }
+            }
+            var deadline = DateTime.UtcNow.AddMinutes(10);
+            while (!p.HasExited)
+            {
+                Tail();
+                if (DateTime.UtcNow > deadline) { try { p.Kill(true); } catch { } break; }
+                await Task.Delay(500, ct);
+            }
+            Tail();
             return JsonFile.Read<ExchangeScopeResult>(output)
-                   ?? new ExchangeScopeResult { Error = "Das PowerShell-Fenster wurde ohne Ergebnis geschlossen." };
+                   ?? new ExchangeScopeResult { Error = "Exchange-Skript ohne Ergebnis beendet (Zeitüberschreitung oder Anmeldung abgebrochen)." };
         }
         finally
         {
@@ -61,29 +82,31 @@ public static class ExchangeScope
 
     // ASCII only: no typographic quotes in PowerShell strings.
     const string Script = """
-        param([string]$InputFile, [string]$OutputFile)
+        param([string]$InputFile, [string]$OutputFile, [string]$LogFile)
         $ErrorActionPreference = 'Stop'
-        $Host.UI.RawUI.WindowTitle = 'M365 SMTP Proxy - Exchange Online'
+        $ProgressPreference = 'SilentlyContinue'
+        # runs without a window: progress lines go to the log file the GUI shows
+        function Write-Step([string]$Text) { Add-Content -Path $LogFile -Value $Text -Encoding UTF8 }
         $in = Get-Content -Raw -Path $InputFile | ConvertFrom-Json
         $result = [ordered]@{ ok = $false; error = $null; group = $null; members = @(); notFound = @() }
         try {
-            Write-Host 'M365 SMTP Proxy: Absender in Exchange Online einschraenken' -ForegroundColor Cyan
-            Write-Host ''
-            if (-not (Get-Module -ListAvailable -Name ExchangeOnlineManagement)) {
-                Write-Host '> Modul ExchangeOnlineManagement wird installiert (aktueller Benutzer) ...'
+            # -DisableWAM (sign-in in the browser) needs ExchangeOnlineManagement 3.7 or newer; WAM fails in elevated processes
+            $installed = Get-Module -ListAvailable -Name ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1
+            if (-not $installed -or $installed.Version -lt [version]'3.7.0') {
+                Write-Step 'Modul ExchangeOnlineManagement wird installiert (aktueller Benutzer) ...'
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
                     Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
                 }
-                Install-Module ExchangeOnlineManagement -Scope CurrentUser -Force -AllowClobber
+                Install-Module ExchangeOnlineManagement -MinimumVersion 3.7.0 -Scope CurrentUser -Force -AllowClobber
             }
-            Import-Module ExchangeOnlineManagement
-            Write-Host '> Anmeldung an Exchange Online (Exchange-Administrator) ...'
-            $connect = @{ ShowBanner = $false }
+            Import-Module ExchangeOnlineManagement -MinimumVersion 3.7.0
+            Write-Step 'Anmeldung an Exchange Online im Browser (Exchange-Administrator) ...'
+            $connect = @{ ShowBanner = $false; DisableWAM = $true }
             if ($in.organization) { $connect.Organization = $in.organization }
             Connect-ExchangeOnline @connect
 
-            Write-Host "> Gruppe $($in.groupAlias) ..."
+            Write-Step "Gruppe $($in.groupAlias) ..."
             $group = Get-DistributionGroup -Identity $in.groupAlias -ErrorAction SilentlyContinue
             if (-not $group) {
                 $group = New-DistributionGroup -Name $in.groupName -Alias $in.groupAlias -Type Security -MemberJoinRestriction Closed -MemberDepartRestriction Closed
@@ -97,16 +120,16 @@ public static class ExchangeScope
                 $r = Get-Recipient -Identity $m -ErrorAction SilentlyContinue
                 if ($r) { $members += [string]$r.PrimarySmtpAddress } else { $result.notFound += $m }
             }
-            Write-Host "> Mitglieder werden gesetzt ($($members.Count)) ..."
+            Write-Step "Mitglieder werden gesetzt ($($members.Count)) ..."
             Update-DistributionGroupMember -Identity $group.Identity -Members $members -BypassSecurityGroupManagerCheck -Confirm:$false
             $result.members = $members
 
-            Write-Host '> Dienstprinzipal in Exchange ...'
+            Write-Step 'Dienstprinzipal in Exchange ...'
             if (-not (Get-ServicePrincipal -Identity $in.appId -ErrorAction SilentlyContinue)) {
                 New-ServicePrincipal -AppId $in.appId -ObjectId $in.servicePrincipalId -DisplayName $in.displayName | Out-Null
             }
 
-            Write-Host '> Verwaltungsbereich ...'
+            Write-Step 'Verwaltungsbereich ...'
             $filter = "MemberOfGroup -eq '$($group.DistinguishedName)'"
             if (Get-ManagementScope -Identity $in.scopeName -ErrorAction SilentlyContinue) {
                 Set-ManagementScope -Identity $in.scopeName -RecipientRestrictionFilter $filter
@@ -114,23 +137,19 @@ public static class ExchangeScope
                 New-ManagementScope -Name $in.scopeName -RecipientRestrictionFilter $filter | Out-Null
             }
 
-            Write-Host '> Rolle Application Mail.Send ...'
+            Write-Step 'Rolle Application Mail.Send ...'
             $assigned = Get-ManagementRoleAssignment -RoleAssignee $in.appId -Role 'Application Mail.Send' -ErrorAction SilentlyContinue
             if (-not $assigned) {
                 New-ManagementRoleAssignment -App $in.appId -Role 'Application Mail.Send' -CustomResourceScope $in.scopeName | Out-Null
             }
             $result.ok = $true
-            Write-Host ''
-            Write-Host 'Fertig. Aenderungen in Exchange wirken nach bis zu 30 Minuten.' -ForegroundColor Green
+            Write-Step 'Fertig. Aenderungen in Exchange wirken nach bis zu 30 Minuten.'
         } catch {
             $result.error = $_.Exception.Message
-            Write-Host ''
-            Write-Host "Fehler: $($_.Exception.Message)" -ForegroundColor Red
-            Read-Host 'Eingabetaste zum Schliessen'
+            Write-Step "Fehler: $($_.Exception.Message)"
         } finally {
             try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue } catch { }
             $result | ConvertTo-Json -Depth 4 | Set-Content -Path $OutputFile -Encoding UTF8
         }
-        if ($result.ok) { Start-Sleep -Seconds 3 }
         """;
 }

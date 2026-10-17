@@ -1,7 +1,7 @@
 <Project>
   <!-- Client version: raise on every change below client/, otherwise the management server sees no update. -->
   <PropertyGroup>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Product>M365 SMTP Proxy</Product>
     <Company>M365 SMTP Proxy</Company>
     <TargetFramework>net10.0-windows</TargetFramework>

@@ -162,4 +162,43 @@ export interface User {
   username: string;
   displayName: string;
   createdAt: string;
+  lastLogin?: string;
+  mfaEnabled: boolean;
+  totpEnabled: boolean;
+  passkeyCount: number;
+}
+
+export interface PasskeyInfo {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  backedUp?: boolean;
+  discoverable?: boolean;
+}
+
+/** the signed-in user with the state of the own second factor */
+export interface CurrentUser extends User {
+  /** still missing for this session: set up a second factor, or confirm it */
+  mfaRequired?: "setup" | "verify";
+  passkeys: PasskeyInfo[];
+  recoveryCodesLeft?: number;
+}
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  lastUsedAt?: string;
+  lastUsedIp?: string;
+}
+
+/** true if version a (x.y.z) is newer than b; updates are only offered upwards */
+export function isNewer(a: string | undefined, b: string | undefined) {
+  const p = (v?: string) => (v ?? "").split(".").map((x) => parseInt(x, 10) || 0);
+  const [x, y] = [p(a), p(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  return false;
 }

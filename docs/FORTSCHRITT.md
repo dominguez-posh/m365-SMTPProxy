@@ -1,5 +1,12 @@
 # Fortschritt
 
+## Stand 17.10.2026 spät (Client 0.1.2)
+
+- Server läuft in Azure (Pipeline grün), erster Proxy installiert und freigegeben.
+- 0.1.1: Absturz der GUI beim Start behoben. 0.1.2: Exchange-Einschränkung ohne WAM und ohne sichtbares Fenster.
+- Server: Web-Oberfläche im hrdnr-Design, MFA (Passkey, Authenticator-App, Notfallcodes), Passkey-Anmeldung,
+  API-Tokens (24 h) und `/api/diagnostics`. `tools/test-server.mjs`: 49 Prüfungen.
+
 ## Stand 17.10.2026 (Client 0.1.0)
 
 Fertig und getestet:
@@ -20,6 +27,5 @@ Noch nicht gegen echte Systeme geprüft:
 ## Offen / später
 
 - TLS (STARTTLS und implizites TLS) mit Zertifikat aus dem Computerspeicher.
-- MFA für die Anmeldung am Verwaltungsserver.
 - Zertifikat der App erneuern, ohne neu zu verbinden (derzeit: „Neu verbinden“ legt eine neue App an).
 - Exchange-Gruppe und Verwaltungsbereich beim Trennen aufräumen.

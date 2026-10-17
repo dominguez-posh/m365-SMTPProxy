@@ -2,7 +2,7 @@
 // registration, approval, sync with logs, remote configuration, commands, update rollout and removal.
 // Needs the built server (npm run build). Usage: node tools/test-server.mjs
 import { spawn } from "node:child_process";
-import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createHash, createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,11 +26,29 @@ const ok = (cond, text) => {
   if (!cond) failed++;
 };
 
+/** TOTP code (RFC 6238) for a time step, as an authenticator app computes it */
+function totp(secret, counter) {
+  const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0, value = 0;
+  const bytes = [];
+  for (const ch of secret) {
+    value = (value << 5) | B32.indexOf(ch);
+    bits += 5;
+    if (bits >= 8) { bytes.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+  }
+  const msg = Buffer.alloc(8);
+  msg.writeBigUInt64BE(BigInt(counter));
+  const h = createHmac("sha1", Buffer.from(bytes)).update(msg).digest();
+  const o = h[h.length - 1] & 0x0f;
+  return String((((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) % 1_000_000).padStart(6, "0");
+}
+
 let cookie = "";
+let bearer = "";
 async function ui(method, path, body) {
   const res = await fetch(base + "/api" + path, {
     method,
-    headers: { "Content-Type": "application/json", "X-Requested-With": "smtpproxy", Cookie: cookie },
+    headers: { "Content-Type": "application/json", ...(bearer ? { Authorization: bearer } : { "X-Requested-With": "smtpproxy", Cookie: cookie }) },
     body: body ? JSON.stringify(body) : undefined,
   });
   const sc = res.headers.get("set-cookie");
@@ -77,7 +95,15 @@ try {
   ok((await ui("POST", "/setup/admin", { username: "admin", password: "kurz" })).status === 400, "zu kurzes Passwort abgelehnt");
   ok((await ui("POST", "/setup/admin", { username: "admin", password: "Sehr-sicheres-Passwort-1" })).status === 200, "Administrator angelegt");
   ok((await ui("POST", "/setup/admin", { username: "x", password: "Sehr-sicheres-Passwort-1" })).status === 409, "Ersteinrichtung danach geschlossen");
-  ok((await ui("GET", "/proxies")).status === 200, "angemeldet nach Ersteinrichtung");
+  ok((await ui("GET", "/proxies")).status === 403, "ohne zweiten Faktor gesperrt");
+  const mfaSetup = (await ui("POST", "/auth/mfa/setup")).data;
+  ok(/^otpauth:\/\/totp\//.test(mfaSetup?.uri ?? ""), "Authenticator-Einrichtung liefert otpauth-URI");
+  const step = Math.floor(Date.now() / 30000);
+  ok((await ui("POST", "/auth/mfa/setup/confirm", { code: "000000" === totp(mfaSetup.secret, step) ? "111111" : "000000" })).status === 401, "falscher Code abgelehnt");
+  const confirmed = await ui("POST", "/auth/mfa/setup/confirm", { code: totp(mfaSetup.secret, step) });
+  ok(confirmed.status === 200 && confirmed.data.recoveryCodes?.length === 10, "Authenticator eingerichtet, 10 Notfallcodes");
+  const recoveryCodes = confirmed.data.recoveryCodes;
+  ok((await ui("GET", "/proxies")).status === 200, "angemeldet nach Ersteinrichtung und zweitem Faktor");
   const csrf = await fetch(base + "/api/proxies-update", { method: "POST", headers: { Cookie: cookie } });
   ok(csrf.status === 403, "ohne CSRF-Header abgelehnt");
 
@@ -127,6 +153,40 @@ try {
   ok(pkg.status === 200 && pkg.data === "zip", "Paket mit Signatur abrufbar");
   s = await proxy("POST", "/api/client/v1/sync", { version: "9.9.9" });
   ok(!s.data.update && !(await ui("GET", `/proxies/${clientId}`)).data.updateTarget, "Update nach Installation erledigt");
+
+  // API token: admin rights without account management, at most 24 hours
+  ok((await ui("POST", "/api-tokens", { name: "zu lang", hours: 25 })).status === 400, "API-Token länger als 24 Stunden abgelehnt");
+  const tok = await ui("POST", "/api-tokens", { name: "Test", hours: 1 });
+  ok(tok.status === 200 && /^smtpproxy_[A-Za-z0-9]+\.[\w-]+$/.test(tok.data.token) && !("secretHash" in tok.data), "API-Token erzeugt");
+  bearer = `Bearer ${tok.data.token}`;
+  ok((await ui("GET", `/proxies/${clientId}/logs?kind=mail`)).data.length === 3, "API-Token liest Protokolle");
+  ok((await ui("POST", `/proxies/${clientId}/commands`, { type: "retryQueue" })).status === 200, "API-Token sendet Befehle (ohne CSRF-Header)");
+  ok((await ui("GET", "/diagnostics")).data?.serverLog?.length > 0, "API-Token liest Serverausgaben");
+  ok((await ui("GET", "/users")).status === 403, "API-Token darf keine Benutzer verwalten");
+  ok((await ui("POST", "/api-tokens", { name: "x", hours: 1 })).status === 403, "API-Token darf keine Tokens erzeugen");
+  bearer = "Bearer smtpproxy_abc.falsch";
+  ok((await ui("GET", "/proxies")).status === 401, "falscher API-Token abgelehnt");
+  bearer = "";
+  ok((await ui("DELETE", `/api-tokens/${tok.data.id}`)).status === 204, "API-Token widerrufen");
+  bearer = `Bearer ${tok.data.token}`;
+  ok((await ui("GET", "/proxies")).status === 401, "widerrufener API-Token abgelehnt");
+  bearer = "";
+
+  // sign in again: password, then the second factor
+  await ui("POST", "/auth/logout");
+  const relogin = await ui("POST", "/auth/login", { username: "admin", password: "Sehr-sicheres-Passwort-1" });
+  ok(relogin.data?.mfaRequired === "verify", "nach dem Passwort wird der zweite Faktor verlangt");
+  ok((await ui("GET", "/proxies")).status === 403, "vor dem zweiten Faktor gesperrt");
+  ok((await ui("POST", "/auth/mfa/verify", { code: totp(mfaSetup.secret, step) })).status === 401, "bereits benutzter Code abgelehnt");
+  ok((await ui("POST", "/auth/mfa/verify", { code: totp(mfaSetup.secret, step + 1) })).status === 200, "Anmeldung mit neuem Code");
+  ok((await ui("GET", "/proxies")).status === 200, "danach voller Zugriff");
+  await ui("POST", "/auth/logout");
+  await ui("POST", "/auth/login", { username: "admin", password: "Sehr-sicheres-Passwort-1" });
+  ok((await ui("POST", "/auth/mfa/verify", { code: recoveryCodes[0] })).data?.recoveryCodesLeft === 9, "Anmeldung mit Notfallcode, 9 übrig");
+  await ui("POST", "/auth/logout");
+  await ui("POST", "/auth/login", { username: "admin", password: "Sehr-sicheres-Passwort-1" });
+  ok((await ui("POST", "/auth/mfa/verify", { code: recoveryCodes[0] })).status === 401, "Notfallcode gilt nur einmal");
+  ok((await ui("POST", "/auth/mfa/verify", { code: recoveryCodes[1] })).status === 200, "zweiter Notfallcode");
 
   ok((await proxy("POST", "/api/client/v1/unregister", {})).status === 200, "Abmeldung");
   ok((await ui("GET", "/proxies")).data.length === 0, "Proxy entfernt");

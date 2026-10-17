@@ -79,7 +79,7 @@
                             </StackPanel>
                         </Border>
                         <CheckBox x:Name="ExchangeScopeCheck" Content="Absender zusätzlich in Exchange Online einschränken (empfohlen)" IsChecked="True" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ (Exchange-Gruppe und RBAC for Applications). Dafür öffnet sich ein PowerShell-Fenster mit Anmeldung als Exchange-Administrator." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ (Exchange-Gruppe und RBAC for Applications). Dafür meldet sich ein Exchange-Administrator im Browser an." />
                         <WrapPanel Margin="0,4,0,0">
                             <Button x:Name="ConnectButton" Content="Mit Microsoft 365 verbinden" Click="Connect_Click" Margin="0,0,8,8" />
                             <Button x:Name="ExchangeButton" Content="Absender in Exchange abgleichen" Click="Exchange_Click" Margin="0,0,8,8" />

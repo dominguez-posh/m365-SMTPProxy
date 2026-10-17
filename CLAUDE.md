@@ -35,7 +35,16 @@ Image `ghcr.io/dominguez-posh/m365-smtpproxy` öffentlich. Vorbild für Plattfor
   Danach App-only mit Zertifikat. Kein Device-Code-Flow (gilt als unsicher).
 - **Verwaltungsserver**: Client trägt nur die HTTPS-Adresse ein, meldet sich mit EC-P-256-Schlüsselpaar an
   (Maschinenschlüssel, nicht exportierbar), jede Anfrage signiert (Schema wie hrdnr). Erstverbindung muss im Server
-  freigegeben werden. Erster Start des Servers: Ersteinrichtung im Browser legt den Admin mit Passwort an. MFA später.
+  freigegeben werden. Erster Start des Servers: Ersteinrichtung im Browser legt den Admin mit Passwort an.
+- **Anmeldung am Server** wie hrdnr: Passwort + Pflicht-Zweitfaktor (Passkey oder Authenticator-App, Notfallcodes),
+  Anmeldung ohne Passwort mit Passkey. `server/src/totp.ts` und `server/src/webauthn.ts` stammen unverändert aus hrdnr.
+- **API-Tokens** (`Bearer smtpproxy_<id>.<secret>`, höchstens 24 Stunden) für Fehlersuche: Proxys, Protokolle,
+  Ereignisse, Befehle, `/api/diagnostics` (Serverausgaben). Beschreibung: `docs/API.md`. Für Fehlersuche den Nutzer
+  nach einem Token fragen statt zu raten.
+- **Web-Oberfläche** im Design von hrdnr (`web/public/app.css`, Tokens, dunkle Seitenleiste, react-icons).
+- **Exchange-Einschränkung** läuft unsichtbar mit `Connect-ExchangeOnline -DisableWAM` (WAM scheitert in Prozessen mit
+  Adminrechten mit 0x80070520); Fortschritt erscheint im Protokoll der GUI.
+- Updates werden nur angeboten, wenn das Paket neuer ist (`isNewer` in `shared/types.ts`).
 - **Updates**: Das Image enthält das Client-Paket (Zip + SHA-256). Der Server rollt Updates gezielt aus
   (pro Client oder alle); der Client prüft den Hash und aktualisiert sich über einen Updater-Prozess.
 - **Eine Umgebung** (`prod`), kein dev/test. Push auf `main` → Build → Image → Terraform apply, alles automatisch.
@@ -56,7 +65,9 @@ Azure Files für `/data`, Log Analytics mit Tageslimit. Kosten neuer Ressourcen 
 
 - Client bauen/testen: `dotnet build client` / `dotnet test client` (SDK liegt beim Nutzer unter
   `%LOCALAPPDATA%\Microsoft\dotnet`, ggf. in den PATH nehmen).
-- Server: `npm run typecheck` und `npm run build` vor jedem Commit.
+- Server: `npm run typecheck`, `npm run build` und `node tools/test-server.mjs` vor jedem Commit.
+- GUI-Änderungen lokal starten: `__COMPAT_LAYER=RunAsInvoker` und `SMTPPROXY_DATA` setzen (keine Adminrechte nötig);
+  Startfehler stehen in `logsgui-error.log`.
 - Ändert sich etwas unter `client/`, die Version in `client/Directory.Build.props` erhöhen, sonst erkennt der
   Server kein Update.
 - Patch-Skripte (Node) ins Scratchpad; in JS `replace(a, () => b)` statt `replace(a, b)` (PowerShell-`$`).

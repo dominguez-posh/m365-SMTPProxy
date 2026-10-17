@@ -326,9 +326,9 @@ public partial class MainWindow : Window
 
     async Task ApplyExchangeAsync()
     {
-        LogM365("PowerShell-Fenster für Exchange Online wird geöffnet (Anmeldung als Exchange-Administrator) …");
+        LogM365("Exchange Online: Anmeldung als Exchange-Administrator im Browser …");
         var c = ConfigStore.Load();
-        var r = await ExchangeScope.ApplyAsync(c, CancellationToken.None);
+        var r = await ExchangeScope.ApplyAsync(c, line => LogM365("Exchange: " + line), CancellationToken.None);
         if (!r.Ok)
         {
             LogM365($"Exchange-Einschränkung fehlgeschlagen: {r.Error}");
