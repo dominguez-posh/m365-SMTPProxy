@@ -31,14 +31,6 @@ export interface ProxyConfig {
   senders: {
     allowedAddresses: string[];
     allowedDomains: string[];
-    exchangeScopeEnabled: boolean;
-    exchangeScopeGroup: string;
-    exchangeScopeSyncedAt?: string | null;
-    /** shared mailbox for senders without an own mailbox (their addresses become its aliases); empty = not set up */
-    sharedMailbox?: string;
-    sharedMailboxAliases?: string[];
-    autoCreateAliases?: boolean;
-    sharedMailboxSetupAt?: string | null;
   };
   m365: {
     tenantId: string;
@@ -49,12 +41,23 @@ export interface ProxyConfig {
     domains: string[];
     connectedAt?: string | null;
     connectedBy: string;
-    /** permission set of the app; 2 = works without any user (aliases, Exchange group, certificate renewal) */
+    /** addresses Graph can send from: mailboxes of the tenant and their aliases (read by the proxy) */
+    addresses?: SenderAddress[];
+    addressesRefreshedAt?: string | null;
+    /** permission set of the app; 3 = Mail.Send, User.Read.All, certificate renewal without any user */
     permissionsVersion?: number;
     certificateRenewedAt?: string | null;
   };
   delivery: { retryHours: number; logRetentionDays: number; logSubjects: boolean };
   management: { serverUrl: string; acceptUpdates: boolean; acceptRemoteConfig: boolean };
+}
+
+export interface SenderAddress {
+  address: string;
+  /** primary address (UPN) of the mailbox the address belongs to */
+  mailbox: string;
+  displayName: string;
+  isAlias: boolean;
 }
 
 export interface ServiceStatus {

@@ -25,14 +25,16 @@ Image `ghcr.io/dominguez-posh/m365-smtpproxy` öffentlich. Vorbild für Plattfor
   Der Dienst schreibt seinen Zustand nach `status.json`. Kein IPC-Kanal nötig.
 - **SMTP**: Port frei wählbar, erst ohne TLS (kommt später). Anmeldung mit lokalen SMTP-Benutzern
   (AUTH PLAIN/LOGIN, PBKDF2-Hashes) oder anonym nur aus freigegebenen Netzen. Kein offenes Relay.
-- **Absender** werden eingeschränkt: Das Tool prüft MAIL FROM gegen erlaubte Adressen/Domänen (und die Domänen
-  des Tenants). Zusätzlich auf Exchange-Seite: *RBAC for Applications* (Rolle `Application Mail.Send` mit
-  Management Scope auf eine mail-aktivierte Sicherheitsgruppe). Dann **keine** Entra-Berechtigung `Mail.Send`
-  vergeben, sonst gilt sie tenantweit (Berechtigungen addieren sich).
-- **M365-Anbindung** aus der GUI: Admin meldet sich per Browser (PKCE, Loopback, Client „Microsoft Graph Command Line
-  Tools“ `14d82eec-…`) an, das Tool legt die App-Registrierung mit Zertifikat an (Schlüssel nicht exportierbar im
-  Maschinenspeicher) und vergibt `Domain.Read.All` (+ `Mail.Send`, falls ohne Exchange-Einschränkung).
-  Danach App-only mit Zertifikat. Kein Device-Code-Flow (gilt als unsicher).
+- **Absender** werden nur im Proxy eingeschränkt: MAIL FROM gegen erlaubte Adressen/Domänen und die Domänen des
+  Tenants. Die App hat tenantweit `Mail.Send` (Entscheidung des Nutzers: einfach, kein Exchange-Abgleich, kein Warten).
+  Graph sendet nur aus einem Postfach (Benutzer oder freigegeben) oder einem Alias davon; die Adressliste
+  (`m365.addresses`, User.Read.All, proxyAddresses) dient als Auswahl in GUI und Web, ein Alias wird aus seinem
+  Postfach gesendet (`SenderRouter`, braucht SendFromAliasEnabled in Exchange).
+- **M365-Anbindung** aus der GUI: Admin meldet sich einmal per Browser an (PKCE, Loopback, Client „Microsoft Graph
+  Command Line Tools“ `14d82eec-…`). Das Tool verwendet die vorhandene App-Registrierung weiter (aus der Konfiguration
+  oder per Name) oder legt sie an, mit Zertifikat (nicht exportierbar im Maschinenspeicher) und den Rechten aus
+  `AppProvisioner` (Mail.Send, User.Read.All, Domain.Read.All, Application.ReadWrite.OwnedBy + App ist ihre eigene
+  Besitzerin). Danach App-only; der Dienst erneuert das Zertifikat selbst (`CertificateRenewal`). Kein Device-Code-Flow.
 - **Verwaltungsserver**: Client trägt nur die HTTPS-Adresse ein, meldet sich mit EC-P-256-Schlüsselpaar an
   (Maschinenschlüssel, nicht exportierbar), jede Anfrage signiert (Schema wie hrdnr). Erstverbindung muss im Server
   freigegeben werden. Erster Start des Servers: Ersteinrichtung im Browser legt den Admin mit Passwort an.
@@ -42,15 +44,9 @@ Image `ghcr.io/dominguez-posh/m365-smtpproxy` öffentlich. Vorbild für Plattfor
   Ereignisse, Befehle, `/api/diagnostics` (Serverausgaben). Beschreibung: `docs/API.md`. Für Fehlersuche den Nutzer
   nach einem Token fragen statt zu raten.
 - **Web-Oberfläche** im Design von hrdnr (`web/public/app.css`, Tokens, dunkle Seitenleiste, react-icons).
-- **Absender ohne Postfach** gehen über ein freigegebenes Postfach (`senders.sharedMailbox`) mit der Adresse als Alias.
-  Einrichtung per GUI (`ExchangeSetup`), zur Laufzeit app-only über die REST-Schnittstelle des EXO-Moduls
-  (`ExchangeAdmin`, Exchange.ManageAsApp + Rollengruppe nur für Postfach und Absendergruppe).
-- **Nur eine Admin-Anmeldung, danach kein Benutzer** (Entscheidung des Nutzers): Exchange-Token per prompt=none aus
-  derselben Browsersitzung; Aliasse, Exchange-Gruppe und Zertifikatserneuerung macht der Dienst selbst
-  (`AppProvisioner.PermissionsVersion`, `CertificateRenewal`). Keine Funktion einbauen, die wieder einen Benutzer braucht.
-  Postfach-Felder hält der Server wie `m365` vom Proxy fest; nur `autoCreateAliases` ist im Web änderbar.
-- **Exchange-Einschränkung** läuft unsichtbar mit `Connect-ExchangeOnline -DisableWAM` (WAM scheitert in Prozessen mit
-  Adminrechten mit 0x80070520); Fortschritt erscheint im Protokoll der GUI.
+- **Kein Exchange-PowerShell, keine Exchange-Objekte** (Postfächer, Aliasse, Gruppen legt der Admin selbst an).
+  Ein Versuch mit freigegebenem Postfach, automatischen Aliassen und RBAC for Applications (0.2.0/0.2.1) war dem
+  Nutzer zu kompliziert und zu langsam und wurde in 0.3.0 wieder entfernt.
 - Updates werden nur angeboten, wenn das Paket neuer ist (`isNewer` in `shared/types.ts`).
 - **Updates**: Das Image enthält das Client-Paket (Zip + SHA-256). Der Server rollt Updates gezielt aus
   (pro Client oder alle); der Client prüft den Hash und aktualisiert sich über einen Updater-Prozess.

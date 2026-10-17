@@ -11,16 +11,12 @@ Server beliebig viele Proxys zentral (Einstellungen, Protokolle, Updates).
   (TLS folgt in einer späteren Version).
 - **Anmeldung**: lokale SMTP-Benutzer (PBKDF2-Hashes) oder anonym nur aus freigegebenen Netzen. Kein offenes Relay.
 - **Erlaubte Absender**: nur Domänen des Tenants, zusätzlich Listen erlaubter Adressen/Domänen, je Benutzer weiter
-  einschränkbar. Auf Wunsch auch in Exchange Online erzwungen (RBAC for Applications: die App darf nur als die
-  Postfächer einer Gruppe senden).
-- **Absender ohne eigenes Postfach**: Das Tool legt ein freigegebenes Postfach an (z. B. smtpproxy@contoso.com, Aliasse
-  noreply@ und absender@). Sendet ein Gerät als Adresse ohne Postfach, legt der Dienst sie als Alias an und sendet aus
-  dem freigegebenen Postfach mit dieser Absenderadresse (SendFromAliasEnabled). Die App darf in Exchange nur die
-  Adressen dieses einen Postfachs ändern.
+  einschränkbar. Die Adressen wählst du aus einer Liste aller Adressen, von denen Graph senden kann (Postfächer und
+  freigegebene Postfächer mit ihren Aliassen). Graph sendet nur aus einem Postfach; fehlt eine Adresse, in Exchange
+  ein Postfach oder freigegebenes Postfach anlegen.
 - **Einrichtung per Klick, danach ohne Benutzer**: einmalige Anmeldung als Administrator im Browser; das Tool legt
   die App-Registrierung mit Zertifikat an (privater Schlüssel nicht exportierbar im Zertifikatspeicher des Computers)
-  und richtet Exchange mit derselben Anmeldung ein. Danach nur noch App + Zertifikat: Aliasse, Exchange-Gruppe und die
-  Erneuerung des Zertifikats erledigt der Dienst selbst.
+  oder verwendet die vorhandene weiter. Danach nur noch App + Zertifikat; das Zertifikat erneuert der Dienst selbst.
 - **Zuverlässige Zustellung**: Warteschlange auf der Festplatte, Wiederholung bei vorübergehenden Fehlern, große
   Nachrichten bis 150 MB über Upload-Sitzungen, Empfänger exakt nach SMTP-Umschlag (auch Bcc).
 - **Protokolle** ohne Nachrichteninhalt (Betreff optional), Aufbewahrung einstellbar.

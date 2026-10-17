@@ -27,36 +27,7 @@ public sealed class M365Session(Func<ProxyConfig> config)
 
     public GraphMailer? Mailer() => Graph() is { } g ? new GraphMailer(g) : null;
 
-    public void InvalidateToken()
-    {
-        _tokens?.Invalidate();
-        _exchangeTokens?.Invalidate();
-    }
-
-    CertificateTokenSource? _exchangeTokens;
-
-    /// <summary>Exchange Online app-only (aliases of the shared mailbox); null without connection.</summary>
-    public M365.ExchangeAdmin? Exchange()
-    {
-        var c = config().M365;
-        // apps of older versions lack Exchange.ManageAsApp and the Exchange role group: they would only fail
-        if (c.PermissionsVersion < M365.AppProvisioner.PermissionsVersion) return null;
-        if (Tokens() is not { } graph || Organization(c.Domains) is not { } org) return null;
-        lock (_gate)
-        {
-            if (_exchangeTokens is not { } t || t.ClientId != graph.ClientId || t.Thumbprint != graph.Thumbprint || t.TenantId != graph.TenantId)
-            {
-                var cert = Certificates.Find(c.CertificateThumbprint);
-                if (cert is null) return null;
-                t = _exchangeTokens = new CertificateTokenSource(c.TenantId, c.ClientId, cert, M365.ExchangeAdmin.Scope);
-            }
-            return new M365.ExchangeAdmin(c.TenantId, M365.ExchangeAdmin.AppAnchor(org), t.GetAsync);
-        }
-    }
-
-    /// <summary>The initial domain (contoso.onmicrosoft.com), which Exchange needs as organization.</summary>
-    public static string? Organization(IEnumerable<string> domains) =>
-        domains.FirstOrDefault(d => d.EndsWith(".onmicrosoft.com", StringComparison.OrdinalIgnoreCase) && !d.EndsWith(".mail.onmicrosoft.com", StringComparison.OrdinalIgnoreCase));
+    public void InvalidateToken() => _tokens?.Invalidate();
 
     /// <summary>Verified domains of the tenant (Domain.Read.All).</summary>
     public static async Task<List<string>> ReadDomainsAsync(GraphClient graph, CancellationToken ct)
@@ -65,5 +36,35 @@ public sealed class M365Session(Func<ProxyConfig> config)
         return all.Where(d => d["isVerified"]?.GetValue<bool>() == true)
                   .Select(d => d["id"]!.GetValue<string>().ToLowerInvariant())
                   .Order().ToList();
+    }
+
+    /// <summary>
+    /// Every address Graph can send from (User.Read.All): the SMTP addresses (proxyAddresses) of the members of the
+    /// tenant, i.e. user and shared mailboxes with their aliases. Accounts without mailbox have no SMTP addresses.
+    /// </summary>
+    public static async Task<List<SenderAddress>> ReadAddressesAsync(GraphClient graph, CancellationToken ct)
+    {
+        var users = await graph.GetAllAsync("/users?$select=displayName,userPrincipalName,userType,proxyAddresses&$top=999", ct);
+        var list = new List<SenderAddress>();
+        foreach (var u in users)
+        {
+            if (u["userType"]?.GetValue<string>() is "Guest") continue;
+            var upn = (u["userPrincipalName"]?.GetValue<string>() ?? "").ToLowerInvariant();
+            var name = u["displayName"]?.GetValue<string>() ?? "";
+            foreach (var p in u["proxyAddresses"]?.AsArray() ?? [])
+            {
+                var v = p?.GetValue<string>() ?? "";
+                if (!v.StartsWith("smtp:", StringComparison.OrdinalIgnoreCase)) continue;
+                list.Add(new SenderAddress
+                {
+                    Address = v[5..].ToLowerInvariant(),
+                    Mailbox = upn,
+                    DisplayName = name,
+                    // the primary address is written SMTP:, aliases smtp:
+                    IsAlias = !v.StartsWith("SMTP:", StringComparison.Ordinal),
+                });
+            }
+        }
+        return list.DistinctBy(a => a.Address).OrderBy(a => a.Address).ToList();
     }
 }

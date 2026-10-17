@@ -1,5 +1,17 @@
 # Fortschritt
 
+## Stand 18.10.2026 (Client 0.3.0)
+
+- Vereinfacht auf Wunsch des Nutzers: kein freigegebenes Postfach, keine automatischen Aliasse, keine
+  Exchange-Einschränkung (RBAC for Applications), kein Exchange-Abgleich. Die App hat `Mail.Send` tenantweit, der
+  Proxy prüft die erlaubten Absender selbst.
+- Adressliste: der Proxy liest alle SMTP-Adressen der Postfächer (User.Read.All, proxyAddresses) beim Verbinden, alle
+  12 Stunden und per „Neu laden“. GUI und Web bieten sie als Dropdown für die erlaubten Adressen an.
+- Ein Alias wird aus seinem Postfach gesendet; ohne Postfach meldet die Zustellung, dass eines anzulegen ist.
+- „Neu verbinden“ hebt ältere Apps auf die neuen Rechte (eine Anmeldung, die App bleibt dieselbe).
+- Altlasten aus 0.2.x in Exchange (Gruppe smtpproxy-<host>, Verwaltungsbereiche „M365 SMTP Proxy <AppId>…“,
+  Rollenzuweisung „Application Mail.Send“, ggf. Rollengruppe) stören nicht, können aber von Hand entfernt werden.
+
 ## Stand 18.10.2026 (Client 0.2.1)
 
 - „Neu verbinden“ verwendet die bestehende App-Registrierung weiter (aus der Konfiguration oder per Name gefunden)

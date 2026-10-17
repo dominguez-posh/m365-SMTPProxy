@@ -210,38 +210,29 @@ public class MailerTests
     }
 }
 
-public class SharedMailboxTests
+public class SenderAddressTests
 {
     static ProxyConfig Config() => new()
     {
-        M365 = { Domains = ["contoso.com"] },
-        Senders = { ExchangeScopeEnabled = true, AllowedAddresses = ["scan@contoso.com"] },
+        M365 =
+        {
+            Domains = ["contoso.com"],
+            Addresses =
+            [
+                new SenderAddress { Address = "scan@contoso.com", Mailbox = "scan@contoso.com" },
+                new SenderAddress { Address = "noreply@contoso.com", Mailbox = "it@contoso.com", IsAlias = true },
+            ],
+        },
     };
 
     [Fact]
-    public void Exchange_restriction_refuses_senders_outside_the_group()
+    public void Alias_is_sent_from_its_mailbox()
     {
         var c = Config();
-        Assert.Null(SmtpPolicy.CheckSender(c, "scan@contoso.com", null));
-        c.Senders.AllowedAddresses = [];
-        Assert.NotNull(SmtpPolicy.CheckSender(c, "admin@contoso.com", null));
-    }
-
-    [Fact]
-    public void Aliases_of_the_shared_mailbox_pass_the_exchange_restriction()
-    {
-        var c = Config();
-        c.Senders.AllowedAddresses = [];
-        c.Senders.SharedMailbox = "smtpproxy@contoso.com";
-        c.Senders.SharedMailboxAliases = ["noreply@contoso.com"];
-        c.Senders.AutoCreateAliases = false;
-        Assert.Null(SmtpPolicy.CheckSender(c, "NOREPLY@contoso.com", null));
-        Assert.True(SenderRouter.IsAlias(c, "smtpproxy@contoso.com"));
-        Assert.NotNull(SmtpPolicy.CheckSender(c, "neu@contoso.com", null));
-        // automatic aliases: every tenant address may become one
-        c.Senders.AutoCreateAliases = true;
-        Assert.Null(SmtpPolicy.CheckSender(c, "neu@contoso.com", null));
-        Assert.NotNull(SmtpPolicy.CheckSender(c, "neu@fabrikam.com", null));
+        Assert.Equal("it@contoso.com", SenderRouter.MailboxOf(c, "NOREPLY@contoso.com"));
+        Assert.Equal("scan@contoso.com", SenderRouter.MailboxOf(c, "scan@contoso.com"));
+        // unknown addresses are tried as they are; Graph answers if there is no mailbox
+        Assert.Equal("neu@contoso.com", SenderRouter.MailboxOf(c, "neu@contoso.com"));
     }
 
     [Fact]

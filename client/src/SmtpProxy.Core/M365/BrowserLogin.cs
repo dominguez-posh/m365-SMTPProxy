@@ -12,34 +12,15 @@ public sealed record DelegatedToken(string AccessToken, string TenantId, string 
 /// <summary>
 /// Interactive admin sign-in in the system browser: authorization code flow with PKCE and loopback redirect
 /// (RFC 8252), public client "Microsoft Graph Command Line Tools" (same flow as hrdnr / Connect-MgGraph without WAM).
-/// Exchange Online needs its own first-party client (the one of the ExchangeOnlineManagement module); that second
-/// request runs with prompt=none in the same browser session, so the administrator signs in only once.
 /// No device code flow.
 /// </summary>
 public static class BrowserLogin
 {
     public const string GraphCliClientId = "14d82eec-204b-4c2f-b7e8-296a70dab67e";
-    /// <summary>"Microsoft Exchange REST API Based Powershell", the client of Connect-ExchangeOnline.</summary>
-    public const string ExchangeClientId = "fb78d390-0c51-40cd-8e17-fdbfab77341b";
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
 
     public static Task<DelegatedToken> SignInAsync(IEnumerable<string> graphScopes, Action<string> showUrl, CancellationToken ct) =>
         SignInAsync(GraphCliClientId, string.Join(' ', graphScopes.Select(s => "https://graph.microsoft.com/" + s)), "select_account", null, showUrl, ct);
-
-    /// <summary>
-    /// Exchange Online token of the administrator who just signed in: first silently in the existing browser session,
-    /// with a normal sign-in only if the browser asks for one.
-    /// </summary>
-    public static async Task<DelegatedToken> SignInExchangeAsync(string user, Action<string> showUrl, CancellationToken ct)
-    {
-        try { return await SignInAsync(ExchangeClientId, ExchangeAdmin.Scope, "none", user, showUrl, ct); }
-        catch (InteractionRequiredException)
-        {
-            return await SignInAsync(ExchangeClientId, ExchangeAdmin.Scope, "select_account", user, showUrl, ct);
-        }
-    }
-
-    sealed class InteractionRequiredException(string message) : Exception(message);
 
     static async Task<DelegatedToken> SignInAsync(string clientId, string resourceScopes, string prompt, string? loginHint, Action<string> showUrl, CancellationToken ct)
     {
@@ -103,8 +84,6 @@ public static class BrowserLogin
         }
         finally { listener.Stop(); }
 
-        if (prompt == "none" && p.GetValueOrDefault("error") is "interaction_required" or "login_required" or "consent_required" or "account_selection_required")
-            throw new InteractionRequiredException(p["error"]);
         if (p.TryGetValue("error", out var error)) throw new InvalidOperationException($"Anmeldung fehlgeschlagen: {error} {p.GetValueOrDefault("error_description")}");
         if (p.GetValueOrDefault("state") != state) throw new InvalidOperationException("Anmeldung abgelehnt: ungültiger state-Wert.");
 

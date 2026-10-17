@@ -5,7 +5,7 @@ using SmtpProxy.Core.Logging;
 namespace SmtpProxy.Core.Delivery;
 
 /// <summary>Delivers queued messages through Graph; retries transient errors with growing pauses.</summary>
-public sealed class DeliveryWorker(Func<ProxyConfig> config, MailQueue queue, M365Session m365, SenderRouter router)
+public sealed class DeliveryWorker(Func<ProxyConfig> config, MailQueue queue, M365Session m365)
 {
     const int Parallel = 4;
     static readonly int[] BackoffMinutes = [1, 2, 5, 10, 15, 30, 60];
@@ -57,7 +57,7 @@ public sealed class DeliveryWorker(Func<ProxyConfig> config, MailQueue queue, M3
         {
             var mailer = m365.Mailer() ?? throw new GraphException(System.Net.HttpStatusCode.ServiceUnavailable, "notConnected",
                 "Nicht mit Microsoft 365 verbunden");
-            await router.SendAsync(mailer, item.From, item.Recipients, MailQueue.ReadMessage(item.Id), ct);
+            await SenderRouter.SendAsync(mailer, config(), item.From, item.Recipients, MailQueue.ReadMessage(item.Id), ct);
             MailQueue.Remove(item.Id);
             MailQueue.Log(MailEvent.Delivered, item);
             Delivered++;

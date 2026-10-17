@@ -707,10 +707,8 @@ route("PUT", "/api/proxies/:id/config", "user", ({ p, body, user }) => {
     if (!out.passwordHash) fail(400, `Für den neuen Benutzer ${u.name} fehlt ein Passwort.`);
     return out;
   });
-  // the Microsoft 365 connection, the shared mailbox (set up in Exchange) and the server address stay with the proxy
+  // the Microsoft 365 connection (with the address list) and the server address stay with the proxy
   next.m365 = x.config!.m365;
-  const own = x.config!.senders;
-  next.senders = { ...next.senders, sharedMailbox: own.sharedMailbox, sharedMailboxAliases: own.sharedMailboxAliases, sharedMailboxSetupAt: own.sharedMailboxSetupAt };
   next.management = { ...next.management, serverUrl: x.config!.management.serverUrl };
   x.desired = { baseRevision: x.config!.revision, config: next, by: user.username, at: now() };
   delete x.desiredError;

@@ -3,7 +3,7 @@ import {
   LuActivity, LuCheck, LuChevronRight, LuCloud, LuDownload, LuFileText, LuInbox, LuInfo, LuKeyRound, LuMail, LuPencil, LuPlus, LuRefreshCw, LuRotateCcw, LuSave, LuSearch, LuSettings, LuShieldCheck, LuTrash2, LuUsers,
 } from "react-icons/lu";
 import { isNewer } from "../../shared/types";
-import type { MailLogEntry, Overview, Proxy, ProxyConfig, QueueItem, ServiceLogEntry, SmtpUser } from "../../shared/types";
+import type { MailLogEntry, Overview, Proxy, ProxyConfig, QueueItem, SenderAddress, ServiceLogEntry, SmtpUser } from "../../shared/types";
 import { ago, api, fmtDate, randomPassword } from "./api";
 import { Health, online } from "./ProxyList";
 import { useApp } from "./state";
@@ -216,18 +216,7 @@ function StatusTab({ p }: { p: Proxy }) {
               </dd>
               <dt>Absender</dt>
               <dd>
-                {c.senders.exchangeScopeEnabled ? "in Exchange eingeschränkt" : "nur im Proxy geprüft"} · {c.senders.allowedAddresses.length} Adressen, {c.senders.allowedDomains.length} Domänen
-              </dd>
-              <dt>Freigegebenes Postfach</dt>
-              <dd>
-                {c.senders.sharedMailbox ? (
-                  <>
-                    {c.senders.sharedMailbox}
-                    <div className="muted small">Aliasse: {c.senders.sharedMailboxAliases?.join(", ") || "keine"}</div>
-                  </>
-                ) : (
-                  <span className="faint">nicht eingerichtet</span>
-                )}
+                {c.senders.allowedAddresses.length} Adressen, {c.senders.allowedDomains.length} Domänen erlaubt · {c.m365.addresses?.length ?? 0} Adressen im Tenant
               </dd>
               <dt>Domänen</dt>
               <dd>{c.m365.domains.join(", ") || "–"}</dd>
@@ -241,25 +230,13 @@ function StatusTab({ p }: { p: Proxy }) {
 
 const lines = (l: string[]) => l.join("\n");
 const fromLines = (s: string) => [...new Set(s.split(/[\r\n,;]+/).map((x) => x.trim()).filter(Boolean))];
-/** local part (left of the @) as Exchange accepts it */
-const localPartOk = (s: string) => /^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/.test(s) && s.length <= 64;
-/** first own domain of the tenant, otherwise the onmicrosoft.com domain */
-const preferredDomain = (domains: string[]) => domains.find((d) => !d.endsWith(".onmicrosoft.com")) ?? domains[0] ?? "";
-
-/** Allowed addresses: list plus input of the local part with a dropdown of the tenant domains. */
-function AddressEditor({ value, onChange, domains }: { value: string[]; onChange: (v: string[]) => void; domains: string[] }) {
-  const [local, setLocal] = useState("");
-  const [domain, setDomain] = useState(() => preferredDomain(domains));
-  const [error, setError] = useState("");
+/** Allowed addresses: list plus a dropdown of the addresses the tenant can send from. */
+function AddressEditor({ value, onChange, known }: { value: string[]; onChange: (v: string[]) => void; known: SenderAddress[] }) {
+  const options = known.filter((k) => !value.includes(k.address));
+  const [pick, setPick] = useState("");
   const add = () => {
-    const l = local.trim().toLowerCase();
-    if (l.includes("@")) return setError("Nur den Teil vor dem @ eintragen, die Domäne in der Liste wählen.");
-    if (!localPartOk(l)) return setError(`„${l}“ ist kein gültiger Name für eine E-Mail-Adresse.`);
-    if (!domain) return setError("Der Proxy hat noch keine Domänen gemeldet (nicht mit Microsoft 365 verbunden).");
-    const a = `${l}@${domain}`;
-    if (!value.includes(a)) onChange([...value, a]);
-    setLocal("");
-    setError("");
+    if (pick && !value.includes(pick)) onChange([...value, pick]);
+    setPick("");
   };
   return (
     <div className="stack" style={{ gap: 8 }}>
@@ -268,8 +245,9 @@ function AddressEditor({ value, onChange, domains }: { value: string[]; onChange
       ) : (
         <div className="row" style={{ gap: 6 }}>
           {value.map((a) => (
-            <span key={a} className="tag">
+            <span key={a} className="tag" title={known.some((k) => k.address === a) ? undefined : "Kein Postfach mit dieser Adresse im Tenant gefunden"}>
               {a}
+              {!known.some((k) => k.address === a) && known.length > 0 && " ⚠"}
               <button className="icon-btn" style={{ padding: 0 }} title="Entfernen" aria-label={`${a} entfernen`} onClick={() => onChange(value.filter((x) => x !== a))}>
                 <LuTrash2 aria-hidden />
               </button>
@@ -278,32 +256,18 @@ function AddressEditor({ value, onChange, domains }: { value: string[]; onChange
         </div>
       )}
       <div className="row" style={{ flexWrap: "nowrap" }}>
-        <input
-          className="input"
-          value={local}
-          placeholder="scanner"
-          aria-label="Teil vor dem @"
-          onChange={(e) => setLocal(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              add();
-            }
-          }}
-        />
-        <span>@</span>
-        <select className="select" value={domain} onChange={(e) => setDomain(e.target.value)} aria-label="Domäne">
-          {domains.map((d) => (
-            <option key={d} value={d}>
-              {d}
+        <select className="select" value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Adresse aus dem Tenant" disabled={options.length === 0}>
+          <option value="">{known.length === 0 ? "Noch keine Adressen vom Proxy gemeldet" : "Adresse wählen …"}</option>
+          {options.map((k) => (
+            <option key={k.address} value={k.address}>
+              {k.address} {k.isAlias ? `(Alias von ${k.mailbox})` : k.displayName ? `(${k.displayName})` : ""}
             </option>
           ))}
         </select>
-        <button className="btn small" onClick={add}>
+        <button className="btn small" onClick={add} disabled={!pick}>
           <LuPlus aria-hidden /> Hinzufügen
         </button>
       </div>
-      {error && <span className="help" style={{ color: "var(--bad)" }}>{error}</span>}
     </div>
   );
 }
@@ -337,9 +301,7 @@ function ConfigTab({ p, onSaved }: { p: Proxy; onSaved: (p: Proxy) => void }) {
       setShown(users.filter((u) => u.newPassword).map((u) => ({ name: u.name, password: u.newPassword! })));
       setUsers(users.map(({ newPassword, ...u }) => u));
       onSaved(x);
-      const exo = c.senders.exchangeScopeEnabled && (c.m365.permissionsVersion ?? 0) < 2 && lines(next.senders.allowedAddresses) !== lines(base.senders.allowedAddresses);
       toast("Gespeichert. Der Proxy übernimmt die Einstellungen beim nächsten Kontakt (innerhalb von etwa 30 Sekunden).");
-      if (exo) toast("Diese Verbindung ist älter: einmal am Proxy einrichten (Oberfläche → Microsoft 365 → In Exchange einrichten / abgleichen). Danach gleicht der Proxy Exchange selbst ab.", "info");
     } catch (e: any) {
       toast(e.message, "error");
     } finally {
@@ -420,10 +382,12 @@ function ConfigTab({ p, onSaved }: { p: Proxy; onSaved: (p: Proxy) => void }) {
           <div className="form-2">
             <div className="field">
               <label>Adressen</label>
-              <AddressEditor value={addresses} onChange={setAddresses} domains={p.config!.m365.domains} />
+              <AddressEditor value={addresses} onChange={setAddresses} known={p.config!.m365.addresses ?? []} />
               <span className="help">
-                Hat eine Adresse kein eigenes Postfach, legt der Proxy sie als Alias des freigegebenen Postfachs an
-                {base.senders.sharedMailbox ? ` (${base.senders.sharedMailbox})` : " (vorher am Proxy unter Microsoft 365 einrichten)"}.
+                Zur Auswahl stehen alle Adressen, von denen Microsoft Graph senden kann: Postfächer und freigegebene Postfächer mit
+                ihren Aliassen. Fehlt eine Adresse oder klappt das Senden nicht, in Exchange ein Postfach oder freigegebenes Postfach
+                anlegen (oder die Adresse als Alias eintragen); der Proxy liest die Adressen alle 12 Stunden neu, sofort über die
+                Oberfläche am Proxy („Neu laden“).
               </span>
             </div>
             <div className="field">
@@ -432,22 +396,6 @@ function ConfigTab({ p, onSaved }: { p: Proxy; onSaved: (p: Proxy) => void }) {
               <span className="help">Sind beide Listen leer, ist jede Adresse der Tenant-Domänen erlaubt.</span>
             </div>
           </div>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={c.senders.autoCreateAliases ?? true}
-              disabled={!base.senders.sharedMailbox}
-              onChange={(e) => setC({ ...c, senders: { ...c.senders, autoCreateAliases: e.target.checked } })}
-            />
-            <span>
-              Fehlende Absenderadressen automatisch als Alias anlegen
-              <span className="help">
-                {base.senders.sharedMailbox
-                  ? `Adressen ohne eigenes Postfach werden Aliasse von ${base.senders.sharedMailbox}; gesendet wird aus diesem Postfach mit der Adresse als Absender.`
-                  : "Erst am Proxy einrichten: Oberfläche → Microsoft 365 → In Exchange einrichten / abgleichen."}
-              </span>
-            </span>
-          </label>
         </div>
       </div>
 
@@ -543,7 +491,7 @@ function ConfigTab({ p, onSaved }: { p: Proxy; onSaved: (p: Proxy) => void }) {
             <span>Updates vom Server installieren</span>
           </label>
           <p className="faint small" style={{ margin: 0 }}>
-            Microsoft-365-Verbindung, Exchange-Einschränkung und Serveradresse lassen sich nur am Proxy selbst ändern.
+            Microsoft-365-Verbindung und Serveradresse lassen sich nur am Proxy selbst ändern.
           </p>
         </div>
         <div className="panel-foot">
@@ -790,8 +738,6 @@ function InfoTab({ p }: { p: Proxy }) {
             </dd>
             <dt>Verbunden</dt>
             <dd>{c.m365.connectedAt ? `${fmtDate(c.m365.connectedAt)} durch ${c.m365.connectedBy}` : "–"}</dd>
-            <dt>Exchange-Einschränkung</dt>
-            <dd>{c.senders.exchangeScopeEnabled ? `Gruppe ${c.senders.exchangeScopeGroup}, abgeglichen ${fmtDate(c.senders.exchangeScopeSyncedAt)}` : "nein"}</dd>
             <dt>Einstellungen vom Server</dt>
             <dd>{c.management.acceptRemoteConfig ? "werden übernommen" : "werden nicht übernommen"}</dd>
           </>

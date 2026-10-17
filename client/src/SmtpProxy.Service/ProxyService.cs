@@ -21,10 +21,6 @@ public sealed class ProxyService : BackgroundService
     SmtpServer _smtp = null!;
     DeliveryWorker _delivery = null!;
     M365Session _m365 = null!;
-    SenderRouter _router = null!;
-    CancellationToken _stopping;
-    int _syncing;
-    volatile bool _syncRequested;
     ManagementClient _management = null!;
     string? _m365Error;
     DateTimeOffset _domainsChecked = DateTimeOffset.MinValue;
@@ -39,9 +35,7 @@ public sealed class ProxyService : BackgroundService
 
         _queue = new MailQueue(() => _config);
         _m365 = new M365Session(() => _config);
-        _stopping = ct;
-        _router = new SenderRouter(() => _config, _m365);
-        _delivery = new DeliveryWorker(() => _config, _queue, _m365, _router);
+        _delivery = new DeliveryWorker(() => _config, _queue, _m365);
         _smtp = new SmtpServer(() => _config, _queue, msg => Logs.Info(msg));
         _management = new ManagementClient(() => _config, BuildStatus, Apply, _delivery.Wake);
 
@@ -93,29 +87,6 @@ public sealed class ProxyService : BackgroundService
         if (old.Smtp.Enabled != next.Smtp.Enabled || old.Smtp.ListenAddress != next.Smtp.ListenAddress || old.Smtp.Port != next.Smtp.Port || _smtp.ListeningOn is null)
             _ = _smtp.StartAsync();
         if (old.M365.CertificateThumbprint != next.M365.CertificateThumbprint) _delivery.Wake();
-        var (o, n) = (old.Senders, next.Senders);
-        if ((n.SharedMailbox.Length > 0 || n.ExchangeScopeEnabled) &&
-            (o.SharedMailbox != n.SharedMailbox || o.AutoCreateAliases != n.AutoCreateAliases || o.ExchangeScopeEnabled != n.ExchangeScopeEnabled ||
-             !o.AllowedAddresses.SequenceEqual(n.AllowedAddresses)))
-            _ = SyncExchangeAsync();
-    }
-
-    /// <summary>Aliases and sender group in Exchange follow the allowed addresses (app-only, no administrator).</summary>
-    async Task SyncExchangeAsync()
-    {
-        _syncRequested = true;
-        if (Interlocked.Exchange(ref _syncing, 1) == 1) return;
-        try
-        {
-            while (_syncRequested)
-            {
-                _syncRequested = false;
-                try { await _router.SyncAsync(_stopping); }
-                catch (OperationCanceledException) { return; }
-                catch (Exception ex) { Logs.Warn($"Abgleich mit Exchange: {ex.Message}"); }
-            }
-        }
-        finally { Interlocked.Exchange(ref _syncing, 0); }
     }
 
     /// <summary>Renews the certificate of the app 60 days before it expires; needs no administrator.</summary>
@@ -126,7 +97,7 @@ public sealed class ProxyService : BackgroundService
         if (c.PermissionsVersion < AppProvisioner.PermissionsVersion)
         {
             Logs.Warn($"Das Zertifikat der App läuft am {c.CertificateExpires?.ToLocalTime():d} ab. Die App darf es noch nicht selbst erneuern: " +
-                      "in der Oberfläche einmal „In Exchange einrichten / abgleichen“ ausführen (oder neu verbinden).");
+                      "in der Oberfläche einmal „Neu verbinden“ (die App bleibt dieselbe).");
             return;
         }
         try
@@ -182,7 +153,7 @@ public sealed class ProxyService : BackgroundService
         }
     }
 
-    /// <summary>Daily: refresh tenant domains, delete old logs, warn before the certificate expires.</summary>
+    /// <summary>Hourly: delete old logs, renew the certificate when due; every 12 hours: tenant domains and sender addresses.</summary>
     async Task MaintenanceLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -197,14 +168,24 @@ public sealed class ProxyService : BackgroundService
                     var domains = await M365Session.ReadDomainsAsync(graph, ct);
                     _domainsChecked = DateTimeOffset.UtcNow;
                     _m365Error = null;
+                    List<SenderAddress>? addresses = null;
+                    try { addresses = await M365Session.ReadAddressesAsync(graph, ct); }
+                    catch (GraphException ex) { Logs.Warn($"Absenderadressen konnten nicht gelesen werden (User.Read.All fehlt? Einmal „Neu verbinden“): {ex.Message}"); }
                     // saved only on change: every save raises the revision
                     var fresh = ConfigStore.Load();
-                    if (!domains.SequenceEqual(fresh.M365.Domains))
+                    var changed = !domains.SequenceEqual(fresh.M365.Domains) ||
+                                  (addresses is not null && !addresses.Select(a => a.Address + a.Mailbox).SequenceEqual(fresh.M365.Addresses.Select(a => a.Address + a.Mailbox)));
+                    if (changed)
                     {
-                        Logs.Info($"Domänen des Tenants: {string.Join(", ", domains)}");
                         fresh.M365.Domains = domains;
                         fresh.M365.DomainsRefreshedAt = DateTimeOffset.UtcNow;
-                        Apply(ConfigStore.Save(fresh, "Dienst (Domänenabgleich)"));
+                        if (addresses is not null)
+                        {
+                            fresh.M365.Addresses = addresses;
+                            fresh.M365.AddressesRefreshedAt = DateTimeOffset.UtcNow;
+                        }
+                        Logs.Info($"Domänen des Tenants: {string.Join(", ", domains)}; {fresh.M365.Addresses.Count} Absenderadressen.");
+                        Apply(ConfigStore.Save(fresh, "Dienst (Domänen und Adressen)"));
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -214,7 +195,6 @@ public sealed class ProxyService : BackgroundService
                     Logs.Warn(_m365Error);
                 }
             }
-            await SyncExchangeAsync();
             try { await RenewCertificateAsync(ct); } catch (OperationCanceledException) { break; }
             try { await Task.Delay(TimeSpan.FromHours(1), ct); } catch (OperationCanceledException) { break; }
         }

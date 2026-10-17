@@ -7,18 +7,16 @@ namespace SmtpProxy.Core.M365;
 /// <summary>
 /// Creates the app registration of this proxy with an admin token: certificate in the machine store and the
 /// application permissions the service needs to run without any user:
+/// - Mail.Send: send from the mailboxes of the tenant (the proxy itself only accepts the allowed senders)
+/// - User.Read.All: addresses of the mailboxes and their aliases (dropdown of the allowed senders)
 /// - Domain.Read.All: tenant domains
-/// - Mail.Send (only without Exchange restriction; with it, Mail.Send comes from RBAC for Applications)
-/// - Exchange.ManageAsApp: aliases of the shared mailbox and members of the sender group (Exchange role group whose
-///   write scope covers only these two, see <see cref="ExchangeSetup"/>)
 /// - Application.ReadWrite.OwnedBy with the app as its own owner: the service renews its certificate itself
 /// </summary>
 public static class AppProvisioner
 {
     public const string GraphAppId = "00000003-0000-0000-c000-000000000000";
-    public const string ExchangeAppId = "00000002-0000-0ff1-ce00-000000000000";
-    /// <summary>Raise when the app needs new permissions; older connections get them in the next Exchange setup.</summary>
-    public const int PermissionsVersion = 2;
+    /// <summary>Raise when the app needs new permissions; older connections get them with "Neu verbinden".</summary>
+    public const int PermissionsVersion = 3;
 
     /// <summary>Delegated scopes of the admin sign-in.</summary>
     public static readonly string[] AdminScopes =
@@ -31,7 +29,7 @@ public static class AppProvisioner
     /// name) is kept and only brought up to date (permissions, certificate if the local one is missing or expiring);
     /// a new one is created only if there is none.
     /// </summary>
-    public static async Task<M365Connection> ConnectAsync(DelegatedToken admin, M365Connection existing, bool exchangeScope, Action<string> progress, CancellationToken ct)
+    public static async Task<M365Connection> ConnectAsync(DelegatedToken admin, M365Connection existing, Action<string> progress, CancellationToken ct)
     {
         var graph = GraphClient.WithToken(admin.AccessToken);
         JsonNode? app = null;
@@ -41,7 +39,7 @@ public static class AppProvisioner
             catch (GraphException ex) when (ex.Status == System.Net.HttpStatusCode.NotFound) { }
         }
         app ??= (await graph.GetAsync($"/applications?$filter=displayName eq '{AppName.Replace("'", "''")}'&$select=id,appId,displayName", ct))?["value"]?.AsArray().FirstOrDefault();
-        if (app is null) return await ProvisionAsync(admin, exchangeScope, progress, ct);
+        if (app is null) return await ProvisionAsync(admin, progress, ct);
 
         var appId = app["appId"]!.GetValue<string>();
         var appObjectId = app["id"]!.GetValue<string>();
@@ -90,7 +88,7 @@ public static class AppProvisioner
                 ConnectedAt = DateTimeOffset.UtcNow,
                 ConnectedBy = admin.User,
             };
-            await EnsureAppAccessAsync(admin, connection, exchangeScope, progress, ct);
+            await EnsureAppAccessAsync(admin, connection, progress, ct);
             await VerifyAsync(connection, cert, progress, ct);
             if (created && same && existing.CertificateThumbprint != cert.Thumbprint) Certificates.Delete(existing.CertificateThumbprint);
             return connection;
@@ -114,17 +112,34 @@ public static class AppProvisioner
                 var appGraph = new GraphClient(new CertificateTokenSource(connection.TenantId, connection.ClientId, cert).GetAsync);
                 connection.Domains = await M365Session.ReadDomainsAsync(appGraph, ct);
                 connection.DomainsRefreshedAt = DateTimeOffset.UtcNow;
-                progress("Verbunden.");
-                return;
+                break;
             }
             catch (GraphException) when (DateTime.UtcNow < deadline)
             {
                 await Task.Delay(TimeSpan.FromSeconds(10), ct);
             }
         }
+        // a fresh consent for User.Read.All can take a moment
+        for (var i = 1; ; i++)
+        {
+            try
+            {
+                var appGraph = new GraphClient(new CertificateTokenSource(connection.TenantId, connection.ClientId, cert).GetAsync);
+                connection.Addresses = await M365Session.ReadAddressesAsync(appGraph, ct);
+                connection.AddressesRefreshedAt = DateTimeOffset.UtcNow;
+                progress($"Verbunden. {connection.Addresses.Count} Absenderadressen gefunden.");
+                return;
+            }
+            catch (GraphException) when (i < 6) { await Task.Delay(TimeSpan.FromSeconds(10), ct); }
+            catch (GraphException ex)
+            {
+                progress($"Verbunden. Absenderadressen noch nicht lesbar ({ex.Message}); später unter „Absender“ neu laden.");
+                return;
+            }
+        }
     }
 
-    public static async Task<M365Connection> ProvisionAsync(DelegatedToken admin, bool exchangeScope, Action<string> progress, CancellationToken ct)
+    public static async Task<M365Connection> ProvisionAsync(DelegatedToken admin, Action<string> progress, CancellationToken ct)
     {
         var graph = GraphClient.WithToken(admin.AccessToken);
 
@@ -172,7 +187,7 @@ public static class AppProvisioner
                 ConnectedAt = DateTimeOffset.UtcNow,
                 ConnectedBy = admin.User,
             };
-            await EnsureAppAccessAsync(admin, connection, exchangeScope, progress, ct);
+            await EnsureAppAccessAsync(admin, connection, progress, ct);
             await VerifyAsync(connection, cert, progress, ct);
             return connection;
         }
@@ -187,18 +202,17 @@ public static class AppProvisioner
     /// Gives the app every permission of <see cref="PermissionsVersion"/> (declared and consented) and makes it the
     /// owner of its own registration. Idempotent; also upgrades apps of older versions. Sets PermissionsVersion.
     /// </summary>
-    public static async Task EnsureAppAccessAsync(DelegatedToken admin, M365Connection c, bool exchangeScope, Action<string> progress, CancellationToken ct)
+    public static async Task EnsureAppAccessAsync(DelegatedToken admin, M365Connection c, Action<string> progress, CancellationToken ct)
     {
         var graph = GraphClient.WithToken(admin.AccessToken);
         var graphSp = await ResourceAsync(graph, GraphAppId, "Microsoft Graph", ct);
-        var exoSp = await ResourceAsync(graph, ExchangeAppId, "Office 365 Exchange Online", ct);
         var wanted = new List<(string ResourceAppId, JsonNode Sp, string Role)>
         {
+            (GraphAppId, graphSp, "Mail.Send"),
+            (GraphAppId, graphSp, "User.Read.All"),
             (GraphAppId, graphSp, "Domain.Read.All"),
             (GraphAppId, graphSp, "Application.ReadWrite.OwnedBy"),
-            (ExchangeAppId, exoSp, "Exchange.ManageAsApp"),
         };
-        if (!exchangeScope) wanted.Add((GraphAppId, graphSp, "Mail.Send"));
 
         // declared permissions (shown under "API permissions" of the app)
         var app = await RetryAsync(() => graph.GetAsync($"/applications/{c.AppObjectId}?$select=requiredResourceAccess", ct), ct)

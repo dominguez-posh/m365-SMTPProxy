@@ -35,6 +35,12 @@ public sealed class QueueRow(SpoolItem i)
     public string? LastError => i.LastError;
 }
 
+/// <summary>Entry of the address dropdown: the address with the mailbox it belongs to.</summary>
+public sealed record AddressItem(SenderAddress A)
+{
+    public override string ToString() => A.IsAlias ? $"{A.Address}  (Alias von {A.Mailbox})" : $"{A.Address}  ({A.DisplayName})";
+}
+
 public sealed record LogRow(string Time, string Event, string Client, string From, string To, string Detail);
 
 public partial class MainWindow : Window
@@ -77,21 +83,14 @@ public partial class MainWindow : Window
         AllowAuth.IsChecked = c.Smtp.AllowAuthWithoutTls;
         _addresses.Clear();
         foreach (var a in c.Senders.AllowedAddresses) _addresses.Add(a);
-        FillDomains(NewAddressDomain, c.M365.Domains, null);
-        var req = c.Senders.RequestedSharedMailbox;
-        var mbx = c.Senders.SharedMailbox is { Length: > 0 } set ? set : req ?? "";
-        var at = mbx.IndexOf('@');
-        SharedMailboxCheck.IsChecked = c.Senders.SharedMailbox.Length > 0 || req != "";
-        MailboxLocal.Text = at > 0 ? mbx[..at] : ExchangeSetup.DefaultMailboxName;
-        FillDomains(MailboxDomain, c.M365.Domains, at > 0 ? mbx[(at + 1)..] : null);
-        AutoAliasCheck.IsChecked = c.Senders.AutoCreateAliases;
-        // a set up mailbox stays; its name cannot be changed here
-        SharedMailboxCheck.IsEnabled = MailboxLocal.IsEnabled = MailboxDomain.IsEnabled = c.Senders.SharedMailbox.Length == 0;
+        NewAddress.ItemsSource = c.M365.Addresses.Select(a => new AddressItem(a)).ToList();
+        AddressInfo.Text = c.M365.Addresses.Count == 0
+            ? "Noch keine Adressen gelesen: mit Microsoft 365 verbinden bzw. „Neu laden“."
+            : $"{c.M365.Addresses.Count} Adressen im Tenant, gelesen {c.M365.AddressesRefreshedAt?.LocalDateTime:g}.";
         AllowedDomains.Text = Lines(c.Senders.AllowedDomains);
         ServerUrl.Text = c.Management.ServerUrl;
         AcceptConfig.IsChecked = c.Management.AcceptRemoteConfig;
         AcceptUpdates.IsChecked = c.Management.AcceptUpdates;
-        ExchangeScopeCheck.IsChecked = c.Senders.ExchangeScopeEnabled || (c.Senders.ExchangeScopeRequested ?? true);
         _users.Clear();
         foreach (var u in c.Users)
             _users.Add(new UserRow { Name = u.Name, Enabled = u.Enabled, Description = u.Description, Senders = string.Join(", ", u.AllowedSenders), PasswordHash = u.PasswordHash });
@@ -101,19 +100,6 @@ public partial class MainWindow : Window
 
     static string Lines(IEnumerable<string> l) => string.Join(Environment.NewLine, l);
 
-    /// <summary>Tenant domains for a domain dropdown; preselects the given or the first own (not onmicrosoft.com) domain.</summary>
-    static void FillDomains(ComboBox box, List<string> domains, string? selected)
-    {
-        var keep = selected ?? box.SelectedItem as string;
-        box.ItemsSource = domains.ToList();
-        box.SelectedItem = domains.FirstOrDefault(d => string.Equals(d, keep, StringComparison.OrdinalIgnoreCase))
-                           ?? domains.FirstOrDefault(d => !d.EndsWith(".onmicrosoft.com", StringComparison.OrdinalIgnoreCase))
-                           ?? domains.FirstOrDefault();
-    }
-
-    /// <summary>Local part (left of the @) as Exchange accepts it.</summary>
-    static bool IsValidLocalPart(string s) =>
-        System.Text.RegularExpressions.Regex.IsMatch(s, @"^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*$") && s.Length <= 64;
     static List<string> FromLines(string s) =>
         s.Split(['\r', '\n', ',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
@@ -141,9 +127,6 @@ public partial class MainWindow : Window
             c.Smtp.AllowedNetworks = FromLines(AllowedNetworks.Text);
             c.Smtp.AllowAuthWithoutTls = AllowAuth.IsChecked == true;
             c.Senders.AllowedAddresses = _addresses.Select(a => a.ToLowerInvariant()).Distinct().ToList();
-            c.Senders.AutoCreateAliases = AutoAliasCheck.IsChecked == true;
-            c.Senders.RequestedSharedMailbox = RequestedMailbox();
-            c.Senders.ExchangeScopeRequested = ExchangeScopeCheck.IsChecked == true;
             c.Senders.AllowedDomains = FromLines(AllowedDomains.Text).Select(d => d.TrimStart('@').ToLowerInvariant()).ToList();
             c.Management.ServerUrl = ServerUrl.Text.Trim().TrimEnd('/');
             c.Management.AcceptRemoteConfig = AcceptConfig.IsChecked == true;
@@ -163,15 +146,9 @@ public partial class MainWindow : Window
     {
         var c = ReadControls();
         if (c is null) return false;
-        var exchangeChanged = c.Senders.ExchangeScopeEnabled && c.M365.PermissionsVersion < AppProvisioner.PermissionsVersion &&
-            !c.Senders.AllowedAddresses.SequenceEqual(_config.Senders.AllowedAddresses, StringComparer.OrdinalIgnoreCase);
         _config = ConfigStore.Save(c, $"Oberfläche ({Environment.UserName})");
         LoadConfig();
         FooterText.Text = $"Gespeichert (Revision {_config.Revision}). Der Dienst übernimmt die Änderungen in wenigen Sekunden.";
-        if (exchangeChanged && MessageBox.Show(this,
-                "Die erlaubten Adressen haben sich geändert. Diese Verbindung ist älter und darf Exchange noch nicht selbst abgleichen. Jetzt einmalig in Exchange einrichten (Anmeldung als Administrator)? Danach gleicht der Dienst Änderungen selbst ab.",
-                Title, MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-            Exchange_Click(this, new RoutedEventArgs());
         return true;
     }
 
@@ -240,9 +217,7 @@ public partial class MainWindow : Window
             return SmtpEnabled.IsChecked != c.Smtp.Enabled || ListenAddress.Text.Trim() != c.Smtp.ListenAddress || Port.Text != c.Smtp.Port.ToString()
                    || AnonymousNetworks.Text != Lines(c.Smtp.AnonymousNetworks) || AllowedNetworks.Text != Lines(c.Smtp.AllowedNetworks)
                    || !_addresses.SequenceEqual(c.Senders.AllowedAddresses) || AllowedDomains.Text != Lines(c.Senders.AllowedDomains)
-                   || (AutoAliasCheck.IsChecked == true) != c.Senders.AutoCreateAliases
-                   || RequestedMailbox() != (c.Senders.SharedMailbox is { Length: > 0 } m ? m : c.Senders.RequestedSharedMailbox ?? RequestedMailbox())
-                   || (ExchangeScopeCheck.IsChecked == true) != (c.Senders.ExchangeScopeEnabled || (c.Senders.ExchangeScopeRequested ?? true))
+
                    || ServerUrl.Text.Trim() != c.Management.ServerUrl || _users.Count != c.Users.Count;
         }
         catch { return true; }
@@ -288,13 +263,12 @@ public partial class MainWindow : Window
             ? "Noch nicht verbunden."
             : $"Tenant: {c.TenantName} ({c.TenantId})\nApp-ID: {c.ClientId}\nZertifikat: {c.CertificateThumbprint}, gültig bis {c.CertificateExpires?.LocalDateTime:d}\n" +
               $"Verbunden: {c.ConnectedAt?.LocalDateTime:g} durch {c.ConnectedBy}" + (c.CertificateRenewedAt is { } rn ? $", Zertifikat selbst erneuert {rn.LocalDateTime:g}" : "") + "\n" +
-              $"Arbeitet ohne Benutzer: {(c.PermissionsVersion >= AppProvisioner.PermissionsVersion ? "ja (Aliasse, Exchange-Gruppe und Zertifikat pflegt der Dienst selbst)" : "noch nicht – einmal „In Exchange einrichten / abgleichen“")}\n" +
-              $"Absender in Exchange eingeschränkt: {(_config.Senders.ExchangeScopeEnabled ? $"ja, Gruppe {_config.Senders.ExchangeScopeGroup}, abgeglichen {_config.Senders.ExchangeScopeSyncedAt?.LocalDateTime:g}" : "nein")}\n" +
-              $"Freigegebenes Postfach: {(_config.Senders.SharedMailbox is { Length: > 0 } m ? $"{m}, Aliasse: {(_config.Senders.SharedMailboxAliases.Count > 0 ? string.Join(", ", _config.Senders.SharedMailboxAliases) : "keine")}" : "nicht eingerichtet")}\n" +
+              $"Arbeitet ohne Benutzer: {(c.PermissionsVersion >= AppProvisioner.PermissionsVersion ? "ja (nur App und Zertifikat, Erneuerung durch den Dienst)" : "noch nicht – einmal „Neu verbinden“ (die App bleibt dieselbe)")}\n" +
+              $"Absenderadressen im Tenant: {c.Addresses.Count}\n" +
               $"Domänen: {string.Join(", ", c.Domains)}";
         TenantDomains.Text = c.Domains.Count > 0 ? $"Domänen des Tenants: {string.Join(", ", c.Domains)}" : "";
         ConnectButton.Content = c.IsConnected ? "Neu verbinden" : "Mit Microsoft 365 verbinden";
-        ExchangeButton.IsEnabled = DomainsButton.IsEnabled = TestButton.IsEnabled = DisconnectButton.IsEnabled = c.IsConnected;
+        DomainsButton.IsEnabled = TestButton.IsEnabled = DisconnectButton.IsEnabled = c.IsConnected;
     }
 
     void LogM365(string line) => Dispatcher.Invoke(() =>
@@ -325,121 +299,47 @@ public partial class MainWindow : Window
     {
         var old = _config.M365;
         if (old.IsConnected && MessageBox.Show(this,
-                "Neu verbinden prüft die bestehende App-Registrierung und bringt sie auf den aktuellen Stand (Berechtigungen, Exchange). Die App bleibt dieselbe; das Zertifikat wird nur ersetzt, wenn es fehlt oder bald abläuft. Fortfahren?",
+                "Neu verbinden prüft die bestehende App-Registrierung und bringt ihre Berechtigungen auf den aktuellen Stand. Die App bleibt dieselbe; das Zertifikat wird nur ersetzt, wenn es fehlt oder bald abläuft. Fortfahren?",
                 Title, MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
 
-        var scope = ExchangeScopeCheck.IsChecked == true;
         LogM365("Browser wird für die Anmeldung als Administrator geöffnet …");
         var admin = await BrowserLogin.SignInAsync(AppProvisioner.AdminScopes, url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
         LogM365($"Angemeldet als {admin.User}.");
 
-        var conn = await AppProvisioner.ConnectAsync(admin, old, scope, LogM365, CancellationToken.None);
+        var conn = await AppProvisioner.ConnectAsync(admin, old, LogM365, CancellationToken.None);
         var c = ConfigStore.Load();
         c.M365 = conn;
-        c.Senders.ExchangeScopeEnabled = scope;
-        if (scope && c.Senders.ExchangeScopeGroup.Length == 0) c.Senders.ExchangeScopeGroup = ExchangeSetup.GroupAlias(Environment.MachineName);
         _config = ConfigStore.Save(c, $"Oberfläche ({admin.User})");
         LoadConfig();
         LogM365($"App {conn.ClientId}, Domänen: {string.Join(", ", conn.Domains)}");
 
-        if (scope || SharedMailboxCheck.IsChecked == true) await ApplyExchangeAsync(admin);
         LogM365("Fertig. Ab jetzt arbeitet der Proxy nur mit dem Zertifikat der App; eine weitere Anmeldung ist nicht nötig.");
     });
-
-    async void Exchange_Click(object sender, RoutedEventArgs e) => await RunBusyAsync(() => ApplyExchangeAsync(null));
-
-    /// <summary>Shared mailbox as chosen in the controls ("" = not wanted), unvalidated (saved with the settings).</summary>
-    string RequestedMailbox() =>
-        SharedMailboxCheck.IsChecked != true ? "" : $"{MailboxLocal.Text.Trim().ToLowerInvariant()}@{MailboxDomain.SelectedItem as string}";
-
-    /// <summary>Shared mailbox from the controls; empty if not wanted.</summary>
-    string WantedMailbox()
-    {
-        if (SharedMailboxCheck.IsChecked != true) return "";
-        var local = MailboxLocal.Text.Trim().ToLowerInvariant();
-        if (!IsValidLocalPart(local)) throw new InvalidOperationException($"Ungültiger Name für das freigegebene Postfach: {local}");
-        if (MailboxDomain.SelectedItem is not string domain) throw new InvalidOperationException("Bitte die Domäne des freigegebenen Postfachs wählen.");
-        return $"{local}@{domain}";
-    }
-
-    /// <param name="admin">Graph token of a connect that just happened; otherwise signs in once if the app still needs permissions.</param>
-    async Task ApplyExchangeAsync(DelegatedToken? admin)
-    {
-        var c = ConfigStore.Load();
-        var mailbox = WantedMailbox();
-        var restrict = ExchangeScopeCheck.IsChecked == true || c.Senders.ExchangeScopeEnabled;
-        if (mailbox.Length == 0 && !restrict)
-        {
-            LogM365("In Exchange ist nichts einzurichten (weder Einschränkung noch freigegebenes Postfach gewählt).");
-            return;
-        }
-        if (c.M365.PermissionsVersion < AppProvisioner.PermissionsVersion)
-        {
-            if (admin is null)
-            {
-                LogM365("Die App bekommt einmalig weitere Berechtigungen: Anmeldung als Administrator im Browser …");
-                admin = await BrowserLogin.SignInAsync(AppProvisioner.AdminScopes, url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
-            }
-            await AppProvisioner.EnsureAppAccessAsync(admin, c.M365, restrict, LogM365, CancellationToken.None);
-            var saved = ConfigStore.Load();
-            saved.M365.PermissionsVersion = c.M365.PermissionsVersion;
-            _config = ConfigStore.Save(saved, $"Oberfläche ({admin.User})");
-            c = ConfigStore.Load();
-        }
-
-        // same browser session: Exchange signs in without asking again
-        LogM365("Exchange Online: Zugriff mit derselben Anmeldung …");
-        var exoToken = await BrowserLogin.SignInExchangeAsync(admin?.User ?? "", url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
-        var exo = new ExchangeAdmin(c.M365.TenantId, ExchangeAdmin.UserAnchor(exoToken.User), _ => Task.FromResult(exoToken.AccessToken));
-        var r = await ExchangeSetup.ApplyAsync(exo, c, mailbox, restrict, line => LogM365("Exchange: " + line), CancellationToken.None);
-
-        c = ConfigStore.Load();
-        if (restrict)
-        {
-            c.Senders.ExchangeScopeEnabled = true;
-            c.Senders.ExchangeScopeGroup = r.Group ?? c.Senders.ExchangeScopeGroup;
-            c.Senders.ExchangeScopeSyncedAt = DateTimeOffset.UtcNow;
-        }
-        if (r.Mailbox is { Length: > 0 } m)
-        {
-            c.Senders.SharedMailbox = m;
-            c.Senders.SharedMailboxAliases = r.Aliases.Where(a => a != m).ToList();
-            c.Senders.SharedMailboxSetupAt = DateTimeOffset.UtcNow;
-            c.Senders.AutoCreateAliases = AutoAliasCheck.IsChecked == true;
-            // with allowed lists the proxy itself would refuse the default aliases
-            var p = c.Senders;
-            if (p.AllowedAddresses.Count > 0 || p.AllowedDomains.Count > 0)
-                foreach (var a in ExchangeSetup.DefaultAliases.Select(x => $"{x}@{m[(m.IndexOf('@') + 1)..]}").Where(r.Aliases.Contains))
-                    if (!p.AllowedAddresses.Contains(a) && !p.AllowedDomains.Contains(a[(a.IndexOf('@') + 1)..], StringComparer.OrdinalIgnoreCase))
-                        p.AllowedAddresses.Add(a);
-        }
-        _config = ConfigStore.Save(c, $"Oberfläche ({exoToken.User})");
-        LoadConfig();
-        if (r.Mailbox is { Length: > 0 }) LogM365($"Freigegebenes Postfach {r.Mailbox}, Aliasse: {string.Join(", ", c.Senders.SharedMailboxAliases)}");
-        if (r.Taken.Count > 0) LogM365($"Gehören anderen Empfängern (nicht als Alias angelegt): {string.Join(", ", r.Taken)}");
-        if (restrict) LogM365($"Exchange-Einschränkung: Gruppe {r.Group}, {r.Members.Count} Mitglieder.");
-        if (r.NotFound.Count > 0) LogM365($"Ohne Empfänger in Exchange: {string.Join(", ", r.NotFound)}");
-        if (r.MissingRoles.Count > 0)
-            LogM365($"Hinweis: Rollen fehlen ({string.Join(", ", r.MissingRoles)}). Diesen Teil kann der Dienst nicht selbst; dafür hier erneut einrichten.");
-        LogM365("Änderungen in Exchange wirken nach einigen Minuten bis zu einer Stunde.");
-    }
 
     async void Domains_Click(object sender, RoutedEventArgs e) => await RunBusyAsync(async () =>
     {
         var graph = new M365Session(() => _config).Graph() ?? throw new InvalidOperationException("Zertifikat der App nicht gefunden.");
         var domains = await M365Session.ReadDomainsAsync(graph, CancellationToken.None);
+        List<SenderAddress> addresses;
+        try { addresses = await M365Session.ReadAddressesAsync(graph, CancellationToken.None); }
+        catch (GraphException ex) when (ex.Status == System.Net.HttpStatusCode.Forbidden)
+        {
+            throw new InvalidOperationException($"Die App darf die Adressen noch nicht lesen (User.Read.All). Einmal „Neu verbinden“; die App bleibt dieselbe. ({ex.Message})");
+        }
         var c = ConfigStore.Load();
         c.M365.Domains = domains;
         c.M365.DomainsRefreshedAt = DateTimeOffset.UtcNow;
+        c.M365.Addresses = addresses;
+        c.M365.AddressesRefreshedAt = DateTimeOffset.UtcNow;
         _config = ConfigStore.Save(c, $"Oberfläche ({Environment.UserName})");
         LoadConfig();
-        LogM365($"Domänen: {string.Join(", ", domains)}");
+        LogM365($"Domänen: {string.Join(", ", domains)}; {addresses.Count} Absenderadressen.");
     });
 
     async void TestMail_Click(object sender, RoutedEventArgs e) => await RunBusyAsync(async () =>
     {
         var from = _config.Senders.AllowedAddresses.FirstOrDefault() ?? $"absender@{_config.M365.Domains.FirstOrDefault()}";
-        var values = Prompt.Ask(this, "Testnachricht", ("Absender (Postfach oder Alias des freigegebenen Postfachs)", from), ("Empfänger", ""));
+        var values = Prompt.Ask(this, "Testnachricht", ("Absender (Postfach, freigegebenes Postfach oder Alias)", from), ("Empfänger", ""));
         if (values is null || values[1].Length == 0) return;
         var reason = SmtpPolicy.CheckSender(_config, values[0], null);
         if (reason is not null) throw new InvalidOperationException(reason);
@@ -453,7 +353,7 @@ public partial class MainWindow : Window
         var session = new M365Session(() => _config);
         var mailer = session.Mailer() ?? throw new InvalidOperationException("Zertifikat der App nicht gefunden.");
         LogM365($"Testnachricht von {values[0]} an {values[1]} …");
-        await new SenderRouter(() => ConfigStore.Load(), session).SendAsync(mailer, values[0], [values[1]], ms.ToArray(), CancellationToken.None);
+        await SenderRouter.SendAsync(mailer, _config, values[0], [values[1]], ms.ToArray(), CancellationToken.None);
         LogM365("Testnachricht gesendet.");
     });
 
@@ -472,40 +372,33 @@ public partial class MainWindow : Window
         }
         else Certificates.Delete(c.M365.CertificateThumbprint);
         c.M365 = new M365Connection();
-        c.Senders.ExchangeScopeEnabled = false;
         _config = ConfigStore.Save(c, $"Oberfläche ({Environment.UserName})");
         LoadConfig();
-        LogM365("Verbindung getrennt. Hinweis: Gruppe und Verwaltungsbereich in Exchange bleiben bestehen.");
+        LogM365("Verbindung getrennt.");
     });
 
     // ------------------------------------------------------------------ allowed addresses
 
     void AddAddress_Click(object sender, RoutedEventArgs e)
     {
-        var local = NewAddressLocal.Text.Trim().ToLowerInvariant();
-        if (local.Contains('@'))
+        var address = NewAddress.SelectedItem is AddressItem item ? item.A.Address : NewAddress.Text.Split(' ')[0].Trim().ToLowerInvariant();
+        if (address.Length == 0) return;
+        if (!System.Text.RegularExpressions.Regex.IsMatch(address, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
         {
-            MessageBox.Show(this, "Nur den Teil vor dem @ eintragen und die Domäne in der Liste wählen.", Title);
+            MessageBox.Show(this, $"„{address}“ ist keine E-Mail-Adresse.", Title);
             return;
         }
-        if (!IsValidLocalPart(local))
-        {
-            MessageBox.Show(this, $"„{local}“ ist kein gültiger Name für eine E-Mail-Adresse.", Title);
-            return;
-        }
-        if (NewAddressDomain.SelectedItem is not string domain)
-        {
-            MessageBox.Show(this, "Keine Domäne gewählt. Erst mit Microsoft 365 verbinden, dann stehen die Domänen des Tenants zur Wahl.", Title);
-            return;
-        }
-        var address = $"{local}@{domain}";
+        if (!_config.M365.Addresses.Any(a => a.Address == address) && MessageBox.Show(this,
+                $"{address} ist keine Adresse eines Postfachs im Tenant. Graph kann nur aus einem Postfach, freigegebenen Postfach oder einem Alias davon senden. " +
+                "Lege das Postfach in Exchange an und lade die Adressen neu. Trotzdem hinzufügen?",
+                Title, MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (!_addresses.Contains(address, StringComparer.OrdinalIgnoreCase)) _addresses.Add(address);
-        NewAddressLocal.Clear();
-        NewAddressLocal.Focus();
+        NewAddress.SelectedItem = null;
+        NewAddress.Text = "";
         FooterText.Text = $"{address} hinzugefügt. Mit „Speichern“ übernehmen.";
     }
 
-    void NewAddressLocal_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    void NewAddress_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key == System.Windows.Input.Key.Enter) AddAddress_Click(sender, e);
     }

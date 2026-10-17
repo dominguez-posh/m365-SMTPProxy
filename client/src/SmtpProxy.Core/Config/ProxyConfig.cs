@@ -55,26 +55,6 @@ public sealed class SenderPolicy
     public List<string> AllowedAddresses { get; set; } = [];
     /// <summary>Domains whose every address is allowed. Both lists empty = every address of the tenant domains.</summary>
     public List<string> AllowedDomains { get; set; } = [];
-    /// <summary>Exchange side: Mail.Send only for members of this mail-enabled security group (RBAC for Applications).</summary>
-    public bool ExchangeScopeEnabled { get; set; }
-    public string ExchangeScopeGroup { get; set; } = "";
-    /// <summary>When the GUI last wrote the allowed senders into the Exchange group.</summary>
-    public DateTimeOffset? ExchangeScopeSyncedAt { get; set; }
-
-    /// <summary>
-    /// Shared mailbox (e.g. smtpproxy@contoso.com) for senders without an own mailbox: such addresses become aliases
-    /// of this mailbox and Graph sends from it with the alias as From (SendFromAliasEnabled). Empty = not set up.
-    /// </summary>
-    public string SharedMailbox { get; set; } = "";
-    /// <summary>Addresses known as aliases of the shared mailbox (written by the setup and by the service).</summary>
-    public List<string> SharedMailboxAliases { get; set; } = [];
-    /// <summary>The service adds a missing sender address as alias of the shared mailbox (Exchange.ManageAsApp).</summary>
-    public bool AutoCreateAliases { get; set; } = true;
-    public DateTimeOffset? SharedMailboxSetupAt { get; set; }
-    /// <summary>Choice in the GUI before the Exchange setup: null = default (wanted), "" = not wanted, otherwise the address.</summary>
-    public string? RequestedSharedMailbox { get; set; }
-    /// <summary>Choice in the GUI for the Exchange restriction; null = default (on).</summary>
-    public bool? ExchangeScopeRequested { get; set; }
 }
 
 public sealed class M365Connection
@@ -90,13 +70,26 @@ public sealed class M365Connection
     public DateTimeOffset? DomainsRefreshedAt { get; set; }
     public DateTimeOffset? ConnectedAt { get; set; }
     public string ConnectedBy { get; set; } = "";
-    /// <summary>Permission set of the app (AppProvisioner.PermissionsVersion); older apps are upgraded in the Exchange setup.</summary>
+    /// <summary>Addresses the proxy can send from: mailboxes of the tenant with their aliases (read with User.Read.All).</summary>
+    public List<SenderAddress> Addresses { get; set; } = [];
+    public DateTimeOffset? AddressesRefreshedAt { get; set; }
+    /// <summary>Permission set of the app (AppProvisioner.PermissionsVersion); older apps get it with "Neu verbinden".</summary>
     public int PermissionsVersion { get; set; }
     /// <summary>When the service last renewed the certificate of the app itself.</summary>
     public DateTimeOffset? CertificateRenewedAt { get; set; }
 
     [JsonIgnore]
     public bool IsConnected => TenantId.Length > 0 && ClientId.Length > 0 && CertificateThumbprint.Length > 0;
+}
+
+/// <summary>An address Graph can send from: the mailbox itself or one of its aliases.</summary>
+public sealed class SenderAddress
+{
+    public string Address { get; set; } = "";
+    /// <summary>Primary address (UPN) of the mailbox the address belongs to.</summary>
+    public string Mailbox { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public bool IsAlias { get; set; }
 }
 
 public sealed class DeliverySettings

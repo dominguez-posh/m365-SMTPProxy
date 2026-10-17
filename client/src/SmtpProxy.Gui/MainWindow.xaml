@@ -72,32 +72,15 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel MaxWidth="760" HorizontalAlignment="Left">
                         <TextBlock Text="Microsoft 365" Style="{StaticResource H1}" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Der Proxy sendet über Microsoft Graph im Namen des Absenderpostfachs. Bei der Verbindung meldet sich einmalig ein Globaler Administrator im Browser an. Das Tool legt eine eigene App-Registrierung mit Zertifikat an (Schlüssel nicht exportierbar auf diesem Computer) und richtet Exchange mit derselben Anmeldung ein. Danach arbeitet der Proxy nur mit dem Zertifikat: Aliasse, Exchange-Gruppe und die Erneuerung des Zertifikats erledigt der Dienst selbst." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Der Proxy sendet über Microsoft Graph aus dem Postfach des Absenders. Bei der Verbindung meldet sich einmalig ein Globaler Administrator im Browser an; das Tool legt eine App-Registrierung mit Zertifikat an (Schlüssel nicht exportierbar auf diesem Computer) oder verwendet die vorhandene weiter. Danach arbeitet der Proxy nur mit dem Zertifikat und erneuert es selbst." />
                         <Border Style="{StaticResource Card}" Margin="0,4,0,12">
                             <StackPanel>
                                 <TextBlock x:Name="M365Info" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
-                        <CheckBox x:Name="ExchangeScopeCheck" Content="Absender zusätzlich in Exchange Online einschränken (empfohlen)" IsChecked="True" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ und das freigegebene Postfach (Exchange-Gruppe und RBAC for Applications). Die Gruppe pflegt der Dienst danach selbst." />
-                        <CheckBox x:Name="SharedMailboxCheck" Content="Freigegebenes Postfach für Absender ohne eigenes Postfach einrichten (empfohlen)" IsChecked="True" Margin="0,8,0,0" />
-                        <Grid Margin="22,4,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="160" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="260" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="MailboxLocal" Text="smtpproxy" />
-                            <TextBlock Grid.Column="1" Text="@" VerticalAlignment="Center" Margin="6,0" />
-                            <ComboBox x:Name="MailboxDomain" Grid.Column="2" />
-                        </Grid>
-                        <CheckBox x:Name="AutoAliasCheck" Content="Fehlende Absenderadressen automatisch als Alias anlegen" IsChecked="True" Margin="22,6,0,0" />
-                        <TextBlock Style="{StaticResource Hint}" Margin="22,2,0,0" Text="Das Postfach bekommt die Aliasse noreply@ und absender@ (vorhandene werden übersprungen). Sendet ein Gerät als Adresse ohne eigenes Postfach, legt der Dienst sie als Alias an und sendet aus dem freigegebenen Postfach mit dieser Absenderadresse. Die App darf in Exchange nur die Adressen dieses einen Postfachs ändern. Ein neuer Alias wirkt nach einigen Minuten bis zu einer Stunde; bis dahin wartet die Nachricht in der Warteschlange." />
                         <WrapPanel Margin="0,4,0,0">
                             <Button x:Name="ConnectButton" Content="Mit Microsoft 365 verbinden" Click="Connect_Click" Margin="0,0,8,8" />
-                            <Button x:Name="ExchangeButton" Content="In Exchange einrichten / abgleichen" Click="Exchange_Click" Margin="0,0,8,8" />
-                            <Button x:Name="DomainsButton" Content="Domänen aktualisieren" Click="Domains_Click" Margin="0,0,8,8" />
+                            <Button x:Name="DomainsButton" Content="Domänen und Adressen neu laden" Click="Domains_Click" Margin="0,0,8,8" />
                             <Button x:Name="TestButton" Content="Testnachricht senden" Click="TestMail_Click" Margin="0,0,8,8" />
                             <Button x:Name="DisconnectButton" Content="Verbindung trennen" Click="Disconnect_Click" Margin="0,0,8,8" />
                         </WrapPanel>
@@ -168,22 +151,21 @@
                         <ListBox x:Name="AllowedAddressList" Height="140" SelectionMode="Extended" />
                         <Grid Margin="0,6,0,0">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="200" />
+                                <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="240" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBox x:Name="NewAddressLocal" KeyDown="NewAddressLocal_KeyDown" />
-                            <TextBlock Grid.Column="1" Text="@" VerticalAlignment="Center" Margin="6,0" />
-                            <ComboBox x:Name="NewAddressDomain" Grid.Column="2" />
-                            <Button Grid.Column="3" Content="Hinzufügen" Click="AddAddress_Click" Margin="8,0,0,0" />
-                            <Button Grid.Column="4" Content="Entfernen" Click="RemoveAddress_Click" Margin="8,0,0,0" />
+                            <ComboBox x:Name="NewAddress" IsEditable="True" IsTextSearchEnabled="True" KeyDown="NewAddress_KeyDown" />
+                            <Button Grid.Column="1" Content="Hinzufügen" Click="AddAddress_Click" Margin="8,0,0,0" />
+                            <Button Grid.Column="2" Content="Entfernen" Click="RemoveAddress_Click" Margin="8,0,0,0" />
+                            <Button Grid.Column="3" Content="Neu laden" Click="Domains_Click" Margin="8,0,0,0" />
                         </Grid>
-                        <TextBlock Style="{StaticResource Hint}" Text="Teil vor dem @ eintragen und die Domäne wählen. Hat die Adresse kein eigenes Postfach, wird sie als Alias des freigegebenen Postfachs angelegt (Microsoft 365). Mit Exchange-Einschränkung darf die App nur aus diesen Postfächern und dem freigegebenen Postfach senden." />
+                        <TextBlock x:Name="AddressInfo" Style="{StaticResource Hint}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Die Liste zeigt alle Adressen, von denen Microsoft Graph senden kann: Postfächer und freigegebene Postfächer mit ihren Aliassen. Fehlt eine Adresse oder klappt das Senden nicht, in Exchange ein Postfach oder freigegebenes Postfach mit dieser Adresse anlegen (oder sie als Alias eintragen) und „Neu laden“. Aliasadressen brauchen in Exchange einmalig Set-OrganizationConfig -SendFromAliasEnabled $true." />
                         <TextBlock Text="Erlaubte Domänen" Style="{StaticResource Label}" />
                         <TextBox x:Name="AllowedDomains" Style="{StaticResource Multi}" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Jede Adresse dieser Domänen ist erlaubt. Bei Exchange-Einschränkung gilt das nur, wenn das Postfach auch in der Exchange-Gruppe ist." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Jede Adresse dieser Domänen ist erlaubt, sofern es dafür ein Postfach gibt." />
                         <TextBlock x:Name="TenantDomains" Style="{StaticResource Hint}" />
                     </StackPanel>
                 </ScrollViewer>
