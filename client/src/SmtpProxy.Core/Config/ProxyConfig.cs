@@ -86,8 +86,10 @@ public sealed class M365Connection
     public DateTimeOffset? DomainsRefreshedAt { get; set; }
     public DateTimeOffset? ConnectedAt { get; set; }
     public string ConnectedBy { get; set; } = "";
-    /// <summary>The app has Exchange.ManageAsApp (apps from version 0.2.0 on, older ones get it during the mailbox setup).</summary>
-    public bool ExchangeAccess { get; set; }
+    /// <summary>Permission set of the app (AppProvisioner.PermissionsVersion); older apps are upgraded in the Exchange setup.</summary>
+    public int PermissionsVersion { get; set; }
+    /// <summary>When the service last renewed the certificate of the app itself.</summary>
+    public DateTimeOffset? CertificateRenewedAt { get; set; }
 
     [JsonIgnore]
     public bool IsConnected => TenantId.Length > 0 && ClientId.Length > 0 && CertificateThumbprint.Length > 0;

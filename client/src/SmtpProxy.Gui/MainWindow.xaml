@@ -72,14 +72,14 @@
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel MaxWidth="760" HorizontalAlignment="Left">
                         <TextBlock Text="Microsoft 365" Style="{StaticResource H1}" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Der Proxy sendet über Microsoft Graph im Namen des Absenderpostfachs. Bei der Verbindung meldet sich ein Administrator an (Globaler Administrator oder Rolle mit Administratorzustimmung). Das Tool legt eine eigene App-Registrierung mit Zertifikat an; der Schlüssel bleibt nicht exportierbar auf diesem Computer." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Der Proxy sendet über Microsoft Graph im Namen des Absenderpostfachs. Bei der Verbindung meldet sich einmalig ein Globaler Administrator im Browser an. Das Tool legt eine eigene App-Registrierung mit Zertifikat an (Schlüssel nicht exportierbar auf diesem Computer) und richtet Exchange mit derselben Anmeldung ein. Danach arbeitet der Proxy nur mit dem Zertifikat: Aliasse, Exchange-Gruppe und die Erneuerung des Zertifikats erledigt der Dienst selbst." />
                         <Border Style="{StaticResource Card}" Margin="0,4,0,12">
                             <StackPanel>
                                 <TextBlock x:Name="M365Info" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
                         <CheckBox x:Name="ExchangeScopeCheck" Content="Absender zusätzlich in Exchange Online einschränken (empfohlen)" IsChecked="True" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ und das freigegebene Postfach (Exchange-Gruppe und RBAC for Applications). Dafür meldet sich ein Exchange-Administrator im Browser an." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ und das freigegebene Postfach (Exchange-Gruppe und RBAC for Applications). Die Gruppe pflegt der Dienst danach selbst." />
                         <CheckBox x:Name="SharedMailboxCheck" Content="Freigegebenes Postfach für Absender ohne eigenes Postfach einrichten (empfohlen)" IsChecked="True" Margin="0,8,0,0" />
                         <Grid Margin="22,4,0,0">
                             <Grid.ColumnDefinitions>

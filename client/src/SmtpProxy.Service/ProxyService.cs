@@ -3,6 +3,7 @@ using SmtpProxy.Core.Config;
 using SmtpProxy.Core.Delivery;
 using SmtpProxy.Core.Graph;
 using SmtpProxy.Core.Logging;
+using SmtpProxy.Core.M365;
 using SmtpProxy.Core.Management;
 using SmtpProxy.Core.Smtp;
 
@@ -23,6 +24,7 @@ public sealed class ProxyService : BackgroundService
     SenderRouter _router = null!;
     CancellationToken _stopping;
     int _syncing;
+    volatile bool _syncRequested;
     ManagementClient _management = null!;
     string? _m365Error;
     DateTimeOffset _domainsChecked = DateTimeOffset.MinValue;
@@ -91,20 +93,53 @@ public sealed class ProxyService : BackgroundService
         if (old.Smtp.Enabled != next.Smtp.Enabled || old.Smtp.ListenAddress != next.Smtp.ListenAddress || old.Smtp.Port != next.Smtp.Port || _smtp.ListeningOn is null)
             _ = _smtp.StartAsync();
         if (old.M365.CertificateThumbprint != next.M365.CertificateThumbprint) _delivery.Wake();
-        if (next.Senders.SharedMailbox.Length > 0 && (old.Senders.SharedMailbox != next.Senders.SharedMailbox ||
-                                                      old.Senders.AutoCreateAliases != next.Senders.AutoCreateAliases ||
-                                                      !old.Senders.AllowedAddresses.SequenceEqual(next.Senders.AllowedAddresses)))
-            _ = SyncAliasesAsync();
+        var (o, n) = (old.Senders, next.Senders);
+        if ((n.SharedMailbox.Length > 0 || n.ExchangeScopeEnabled) &&
+            (o.SharedMailbox != n.SharedMailbox || o.AutoCreateAliases != n.AutoCreateAliases || o.ExchangeScopeEnabled != n.ExchangeScopeEnabled ||
+             !o.AllowedAddresses.SequenceEqual(n.AllowedAddresses)))
+            _ = SyncExchangeAsync();
     }
 
-    /// <summary>Allowed addresses without a mailbox become aliases of the shared mailbox before the first message.</summary>
-    async Task SyncAliasesAsync()
+    /// <summary>Aliases and sender group in Exchange follow the allowed addresses (app-only, no administrator).</summary>
+    async Task SyncExchangeAsync()
     {
+        _syncRequested = true;
         if (Interlocked.Exchange(ref _syncing, 1) == 1) return;
-        try { await _router.SyncAsync(_stopping); }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Logs.Warn($"Abgleich der Aliasse: {ex.Message}"); }
+        try
+        {
+            while (_syncRequested)
+            {
+                _syncRequested = false;
+                try { await _router.SyncAsync(_stopping); }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex) { Logs.Warn($"Abgleich mit Exchange: {ex.Message}"); }
+            }
+        }
         finally { Interlocked.Exchange(ref _syncing, 0); }
+    }
+
+    /// <summary>Renews the certificate of the app 60 days before it expires; needs no administrator.</summary>
+    async Task RenewCertificateAsync(CancellationToken ct)
+    {
+        var c = _config.M365;
+        if (!CertificateRenewal.Due(c)) return;
+        if (c.PermissionsVersion < AppProvisioner.PermissionsVersion)
+        {
+            Logs.Warn($"Das Zertifikat der App läuft am {c.CertificateExpires?.ToLocalTime():d} ab. Die App darf es noch nicht selbst erneuern: " +
+                      "in der Oberfläche einmal „In Exchange einrichten / abgleichen“ ausführen (oder neu verbinden).");
+            return;
+        }
+        try
+        {
+            var renewed = await CertificateRenewal.RenewAsync(c, Logs.Info, ct);
+            var fresh = ConfigStore.Load();
+            fresh.M365 = renewed;
+            Apply(ConfigStore.Save(fresh, "Dienst (Zertifikat erneuert)"));
+            Certificates.Delete(c.CertificateThumbprint);
+            Logs.Info($"Zertifikat der App erneuert, gültig bis {renewed.CertificateExpires?.ToLocalTime():d}.");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { Logs.Warn($"Zertifikat konnte nicht erneuert werden (nächster Versuch in einer Stunde): {ex.Message}"); }
     }
 
     ServiceStatus BuildStatus()
@@ -179,9 +214,8 @@ public sealed class ProxyService : BackgroundService
                     Logs.Warn(_m365Error);
                 }
             }
-            await SyncAliasesAsync();
-            if (c.M365.CertificateExpires is { } exp && exp - DateTimeOffset.UtcNow < TimeSpan.FromDays(30))
-                Logs.Warn($"Das Zertifikat der App läuft am {exp.ToLocalTime():d} ab. In der Oberfläche unter Microsoft 365 erneuern.");
+            await SyncExchangeAsync();
+            try { await RenewCertificateAsync(ct); } catch (OperationCanceledException) { break; }
             try { await Task.Delay(TimeSpan.FromHours(1), ct); } catch (OperationCanceledException) { break; }
         }
     }

@@ -48,7 +48,7 @@ public sealed class M365Session(Func<ProxyConfig> config)
                 if (cert is null) return null;
                 t = _exchangeTokens = new CertificateTokenSource(c.TenantId, c.ClientId, cert, M365.ExchangeAdmin.Scope);
             }
-            return new M365.ExchangeAdmin(c.TenantId, org, t.GetAsync);
+            return new M365.ExchangeAdmin(c.TenantId, M365.ExchangeAdmin.AppAnchor(org), t.GetAsync);
         }
     }
 

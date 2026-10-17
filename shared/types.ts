@@ -49,6 +49,9 @@ export interface ProxyConfig {
     domains: string[];
     connectedAt?: string | null;
     connectedBy: string;
+    /** permission set of the app; 2 = works without any user (aliases, Exchange group, certificate renewal) */
+    permissionsVersion?: number;
+    certificateRenewedAt?: string | null;
   };
   delivery: { retryHours: number; logRetentionDays: number; logSubjects: boolean };
   management: { serverUrl: string; acceptUpdates: boolean; acceptRemoteConfig: boolean };

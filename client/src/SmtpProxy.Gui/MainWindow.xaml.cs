@@ -158,13 +158,13 @@ public partial class MainWindow : Window
     {
         var c = ReadControls();
         if (c is null) return false;
-        var exchangeChanged = c.Senders.ExchangeScopeEnabled &&
+        var exchangeChanged = c.Senders.ExchangeScopeEnabled && c.M365.PermissionsVersion < AppProvisioner.PermissionsVersion &&
             !c.Senders.AllowedAddresses.SequenceEqual(_config.Senders.AllowedAddresses, StringComparer.OrdinalIgnoreCase);
         _config = ConfigStore.Save(c, $"Oberfläche ({Environment.UserName})");
         LoadConfig();
         FooterText.Text = $"Gespeichert (Revision {_config.Revision}). Der Dienst übernimmt die Änderungen in wenigen Sekunden.";
         if (exchangeChanged && MessageBox.Show(this,
-                "Die erlaubten Adressen haben sich geändert. Jetzt auch in Exchange Online abgleichen? Sonst darf die App nur als die bisherigen Postfächer senden.",
+                "Die erlaubten Adressen haben sich geändert. Diese Verbindung ist älter und darf Exchange noch nicht selbst abgleichen. Jetzt einmalig in Exchange einrichten (Anmeldung als Administrator)? Danach gleicht der Dienst Änderungen selbst ab.",
                 Title, MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
             Exchange_Click(this, new RoutedEventArgs());
         return true;
@@ -280,7 +280,8 @@ public partial class MainWindow : Window
         M365Info.Text = !c.IsConnected
             ? "Noch nicht verbunden."
             : $"Tenant: {c.TenantName} ({c.TenantId})\nApp-ID: {c.ClientId}\nZertifikat: {c.CertificateThumbprint}, gültig bis {c.CertificateExpires?.LocalDateTime:d}\n" +
-              $"Verbunden: {c.ConnectedAt?.LocalDateTime:g} durch {c.ConnectedBy}\n" +
+              $"Verbunden: {c.ConnectedAt?.LocalDateTime:g} durch {c.ConnectedBy}" + (c.CertificateRenewedAt is { } rn ? $", Zertifikat selbst erneuert {rn.LocalDateTime:g}" : "") + "\n" +
+              $"Arbeitet ohne Benutzer: {(c.PermissionsVersion >= AppProvisioner.PermissionsVersion ? "ja (Aliasse, Exchange-Gruppe und Zertifikat pflegt der Dienst selbst)" : "noch nicht – einmal „In Exchange einrichten / abgleichen“")}\n" +
               $"Absender in Exchange eingeschränkt: {(_config.Senders.ExchangeScopeEnabled ? $"ja, Gruppe {_config.Senders.ExchangeScopeGroup}, abgeglichen {_config.Senders.ExchangeScopeSyncedAt?.LocalDateTime:g}" : "nein")}\n" +
               $"Freigegebenes Postfach: {(_config.Senders.SharedMailbox is { Length: > 0 } m ? $"{m}, Aliasse: {(_config.Senders.SharedMailboxAliases.Count > 0 ? string.Join(", ", _config.Senders.SharedMailboxAliases) : "keine")}" : "nicht eingerichtet")}\n" +
               $"Domänen: {string.Join(", ", c.Domains)}";
@@ -341,12 +342,8 @@ public partial class MainWindow : Window
             catch (Exception ex) { LogM365($"Bisherige App konnte nicht gelöscht werden: {ex.Message}"); }
         }
 
-        if (scope || SharedMailboxCheck.IsChecked == true)
-        {
-            if (scope && _config.Senders.AllowedAddresses.Count == 0 && SharedMailboxCheck.IsChecked != true)
-                LogM365("Hinweis: Noch keine erlaubten Adressen eingetragen. Unter „Absender“ Adressen eintragen und danach „In Exchange einrichten / abgleichen“.");
-            await ApplyExchangeAsync(admin);
-        }
+        if (scope || SharedMailboxCheck.IsChecked == true) await ApplyExchangeAsync(admin);
+        LogM365("Fertig. Ab jetzt arbeitet der Proxy nur mit dem Zertifikat der App; eine weitere Anmeldung ist nicht nötig.");
     });
 
     async void Exchange_Click(object sender, RoutedEventArgs e) => await RunBusyAsync(() => ApplyExchangeAsync(null));
@@ -361,7 +358,7 @@ public partial class MainWindow : Window
         return $"{local}@{domain}";
     }
 
-    /// <param name="admin">Graph admin token of a connect that just happened; otherwise signs in if the app still lacks Exchange.ManageAsApp.</param>
+    /// <param name="admin">Graph token of a connect that just happened; otherwise signs in once if the app still needs permissions.</param>
     async Task ApplyExchangeAsync(DelegatedToken? admin)
     {
         var c = ConfigStore.Load();
@@ -372,23 +369,26 @@ public partial class MainWindow : Window
             LogM365("In Exchange ist nichts einzurichten (weder Einschränkung noch freigegebenes Postfach gewählt).");
             return;
         }
-        if (mailbox.Length > 0 && !c.M365.ExchangeAccess)
+        if (c.M365.PermissionsVersion < AppProvisioner.PermissionsVersion)
         {
-            LogM365("Die App braucht die Berechtigung Exchange.ManageAsApp: Anmeldung als Administrator im Browser …");
-            admin ??= await BrowserLogin.SignInAsync(AppProvisioner.AdminScopes, url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
-            await AppProvisioner.EnsureExchangeAccessAsync(admin, c.M365, LogM365, CancellationToken.None);
+            if (admin is null)
+            {
+                LogM365("Die App bekommt einmalig weitere Berechtigungen: Anmeldung als Administrator im Browser …");
+                admin = await BrowserLogin.SignInAsync(AppProvisioner.AdminScopes, url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
+            }
+            await AppProvisioner.EnsureAppAccessAsync(admin, c.M365, restrict, LogM365, CancellationToken.None);
+            var saved = ConfigStore.Load();
+            saved.M365.PermissionsVersion = c.M365.PermissionsVersion;
+            _config = ConfigStore.Save(saved, $"Oberfläche ({admin.User})");
             c = ConfigStore.Load();
-            c.M365.ExchangeAccess = true;
-            _config = ConfigStore.Save(c, $"Oberfläche ({admin.User})");
         }
 
-        LogM365("Exchange Online: Anmeldung als Exchange-Administrator im Browser …");
-        var r = await ExchangeSetup.ApplyAsync(c, mailbox, restrict, line => LogM365("Exchange: " + line), CancellationToken.None);
-        if (!r.Ok)
-        {
-            LogM365($"Einrichtung in Exchange fehlgeschlagen: {r.Error}");
-            return;
-        }
+        // same browser session: Exchange signs in without asking again
+        LogM365("Exchange Online: Zugriff mit derselben Anmeldung …");
+        var exoToken = await BrowserLogin.SignInExchangeAsync(admin?.User ?? "", url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
+        var exo = new ExchangeAdmin(c.M365.TenantId, ExchangeAdmin.UserAnchor(exoToken.User), _ => Task.FromResult(exoToken.AccessToken));
+        var r = await ExchangeSetup.ApplyAsync(exo, c, mailbox, restrict, line => LogM365("Exchange: " + line), CancellationToken.None);
+
         c = ConfigStore.Load();
         if (restrict)
         {
@@ -409,12 +409,14 @@ public partial class MainWindow : Window
                     if (!p.AllowedAddresses.Contains(a) && !p.AllowedDomains.Contains(a[(a.IndexOf('@') + 1)..], StringComparer.OrdinalIgnoreCase))
                         p.AllowedAddresses.Add(a);
         }
-        _config = ConfigStore.Save(c, $"Oberfläche ({Environment.UserName})");
+        _config = ConfigStore.Save(c, $"Oberfläche ({exoToken.User})");
         LoadConfig();
         if (r.Mailbox is { Length: > 0 }) LogM365($"Freigegebenes Postfach {r.Mailbox}, Aliasse: {string.Join(", ", c.Senders.SharedMailboxAliases)}");
         if (r.Taken.Count > 0) LogM365($"Gehören anderen Empfängern (nicht als Alias angelegt): {string.Join(", ", r.Taken)}");
-        if (restrict) LogM365($"Exchange-Einschränkung: Gruppe {r.Group}, {r.Members.Count} Postfächer.");
-        if (r.NotFound.Count > 0) LogM365($"Nicht gefunden (kein Postfach): {string.Join(", ", r.NotFound)}");
+        if (restrict) LogM365($"Exchange-Einschränkung: Gruppe {r.Group}, {r.Members.Count} Mitglieder.");
+        if (r.NotFound.Count > 0) LogM365($"Ohne Empfänger in Exchange: {string.Join(", ", r.NotFound)}");
+        if (r.MissingRoles.Count > 0)
+            LogM365($"Hinweis: Rollen fehlen ({string.Join(", ", r.MissingRoles)}). Diesen Teil kann der Dienst nicht selbst; dafür hier erneut einrichten.");
         LogM365("Änderungen in Exchange wirken nach einigen Minuten bis zu einer Stunde.");
     }
 

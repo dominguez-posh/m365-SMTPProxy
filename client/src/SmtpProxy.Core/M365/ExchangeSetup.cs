@@ -1,13 +1,11 @@
-using System.Diagnostics;
-using System.Text;
+using System.Text.Json.Nodes;
 using SmtpProxy.Core.Config;
+using SmtpProxy.Core.Graph;
 
 namespace SmtpProxy.Core.M365;
 
 public sealed class ExchangeSetupResult
 {
-    public bool Ok { get; set; }
-    public string? Error { get; set; }
     public string? Group { get; set; }
     public List<string> Members { get; set; } = [];
     public List<string> NotFound { get; set; } = [];
@@ -16,15 +14,18 @@ public sealed class ExchangeSetupResult
     public List<string> Aliases { get; set; } = [];
     /// <summary>Wanted aliases that belong to another recipient (own mailbox, group): skipped.</summary>
     public List<string> Taken { get; set; } = [];
+    /// <summary>Roles the app could not get (the service then cannot do that part alone).</summary>
+    public List<string> MissingRoles { get; set; } = [];
 }
 
 /// <summary>
-/// Exchange Online part of the setup, run in Windows PowerShell with Connect-ExchangeOnline (Exchange administrator,
-/// browser sign-in). Idempotent; one sign-in does both parts:
-/// - Shared mailbox: creates it with its aliases, turns on SendFromAliasEnabled and gives the app the role
-///   "Mail Recipients" limited to this mailbox (role group with write scope), so the service can add aliases.
+/// Exchange Online part of the setup with the token of the administrator who connected (one sign-in, no PowerShell).
+/// Idempotent. Afterwards the service works app-only with its certificate:
+/// - Shared mailbox: created with its aliases, SendFromAliasEnabled on.
 /// - Sender restriction: Mail.Send of the app only for the members of a mail-enabled security group
 ///   (RBAC for Applications); the shared mailbox is a member as well.
+/// - Role group of the app with write scope on exactly the shared mailbox and this group: the service adds aliases
+///   and keeps the group members in line without an administrator.
 /// </summary>
 public static class ExchangeSetup
 {
@@ -34,211 +35,202 @@ public static class ExchangeSetup
 
     public static string GroupAlias(string host) => $"smtpproxy-{host.ToLowerInvariant()}";
     public static string ScopeName(string appId) => $"M365 SMTP Proxy {appId}";
+    static string WriteScopeName(string appId) => $"M365 SMTP Proxy {appId} Verwaltung";
+    static string RoleGroupName(string appId) => $"M365 SMTP Proxy {appId}";
 
     /// <param name="mailbox">Address of the shared mailbox; empty = only the sender restriction.</param>
-    public static async Task<ExchangeSetupResult> ApplyAsync(ProxyConfig c, string mailbox, bool restrictSenders, Action<string> progress, CancellationToken ct)
+    public static async Task<ExchangeSetupResult> ApplyAsync(ExchangeAdmin exo, ProxyConfig c, string mailbox, bool restrictSenders, Action<string> progress, CancellationToken ct)
     {
-        var dir = Path.Combine(Path.GetTempPath(), $"smtpproxy-exo-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(dir);
-        try
+        var result = new ExchangeSetupResult();
+        var appId = c.M365.ClientId;
+        mailbox = mailbox.Trim().ToLowerInvariant();
+
+        progress("Dienstprinzipal der App in Exchange …");
+        var sp = await exo.GetAsync("Get-ServicePrincipal", appId, ct);
+        if (sp is null)
         {
-            var input = Path.Combine(dir, "input.json");
-            var output = Path.Combine(dir, "result.json");
-            var script = Path.Combine(dir, "exchange-setup.ps1");
-            var log = Path.Combine(dir, "progress.log");
-            mailbox = mailbox.Trim().ToLowerInvariant();
-            var at = mailbox.IndexOf('@');
-            List<string> aliases = at <= 0 ? [] : DefaultAliases.Select(a => $"{a}@{mailbox[(at + 1)..]}")
+            await Retry(() => exo.InvokeAsync("New-ServicePrincipal", new JsonObject
+            {
+                ["AppId"] = appId,
+                ["ObjectId"] = c.M365.ServicePrincipalId,
+                ["DisplayName"] = $"{Paths.DisplayName} ({Environment.MachineName})",
+            }, ct), ct);
+            sp = await Retry(async () => await exo.GetAsync("Get-ServicePrincipal", appId, ct) ?? throw NotYet("Dienstprinzipal"), ct);
+        }
+        var spIdentity = sp["Identity"]?.ToString() ?? c.M365.ServicePrincipalId;
+
+        if (mailbox.Length > 0)
+        {
+            var org = (await exo.InvokeAsync("Get-OrganizationConfig", new JsonObject(), ct)).FirstOrDefault();
+            if (org?["SendFromAliasEnabled"]?.GetValue<bool>() != true)
+            {
+                progress("Senden von Aliasadressen wird eingeschaltet (SendFromAliasEnabled) …");
+                await exo.InvokeAsync("Set-OrganizationConfig", new JsonObject { ["SendFromAliasEnabled"] = true }, ct);
+            }
+
+            progress($"Freigegebenes Postfach {mailbox} …");
+            var mbx = await exo.GetAsync("Get-Mailbox", mailbox, ct);
+            if (mbx is null)
+            {
+                if (await exo.FindRecipientAsync(mailbox, ct) is { } other)
+                    throw new InvalidOperationException($"{mailbox} ist bereits vergeben ({other.Type} {other.Identity}) und kein Postfach.");
+                await exo.InvokeAsync("New-Mailbox", new JsonObject
+                {
+                    ["Shared"] = true,
+                    ["Name"] = $"{Paths.DisplayName} ({mailbox})",
+                    ["DisplayName"] = $"{Paths.DisplayName} ({mailbox})",
+                    ["Alias"] = mailbox[..mailbox.IndexOf('@')],
+                    ["PrimarySmtpAddress"] = mailbox,
+                }, ct);
+                progress("Postfach angelegt.");
+                await Retry(() => exo.InvokeAsync("Set-Mailbox", new JsonObject { ["Identity"] = mailbox, ["HiddenFromAddressListsEnabled"] = true }, ct), ct);
+            }
+            else progress("Postfach ist schon vorhanden.");
+            var primary = (mbx?["PrimarySmtpAddress"]?.GetValue<string>() ?? mailbox).ToLowerInvariant();
+
+            var domain = primary[(primary.IndexOf('@') + 1)..];
+            var wanted = DefaultAliases.Select(a => $"{a}@{domain}")
                 .Concat(c.Senders.SharedMailboxAliases)
                 .Concat(c.Senders.AutoCreateAliases ? c.Senders.AllowedAddresses : [])
-                .Select(a => a.ToLowerInvariant())
-                .Where(a => a != mailbox).Distinct().ToList();
-            JsonFile.Write(input, new
+                .Select(a => a.ToLowerInvariant()).Where(a => a != primary).Distinct();
+            foreach (var a in wanted)
             {
-                appId = c.M365.ClientId,
-                servicePrincipalId = c.M365.ServicePrincipalId,
-                displayName = $"{Paths.DisplayName} ({Environment.MachineName})",
-                restrictSenders,
-                groupAlias = c.Senders.ExchangeScopeGroup is { Length: > 0 } g ? g : GroupAlias(Environment.MachineName),
-                groupName = $"{Paths.DisplayName} Absender ({Environment.MachineName})",
-                scopeName = ScopeName(c.M365.ClientId),
-                members = c.Senders.AllowedAddresses,
-                mailbox = at > 0 ? mailbox : "",
-                mailboxName = $"{Paths.DisplayName} ({mailbox})",
-                mailboxAlias = at > 0 ? mailbox[..at] : "",
-                aliases,
-                mailboxScopeName = $"{ScopeName(c.M365.ClientId)} Postfach",
-                roleGroupName = $"{Paths.DisplayName} Aliasse {c.M365.ClientId}",
-                organization = Graph.M365Session.Organization(c.M365.Domains) ?? "",
-            });
-            // Windows PowerShell 5.1 reads scripts without BOM as ANSI
-            await File.WriteAllTextAsync(script, Script, new UTF8Encoding(true), ct);
+                if (await exo.FindRecipientAsync(a, ct) is { } r)
+                {
+                    if (r.Identity == primary) progress($"Alias {a} ist schon vorhanden.");
+                    else
+                    {
+                        progress($"{a} gehört zu {r.Identity} ({r.Type}), übersprungen.");
+                        result.Taken.Add(a);
+                    }
+                    continue;
+                }
+                progress($"Alias {a} wird angelegt …");
+                await Retry(() => exo.AddAliasAsync(primary, a, ct), ct);
+            }
+            var final = await Retry(async () => await exo.FindRecipientAsync(primary, ct) ?? throw NotYet("Postfach"), ct);
+            result.Mailbox = primary;
+            result.Aliases = final.Addresses.Order().ToList();
+        }
 
-            // no window: the sign-in opens in the browser, progress lines go to progress.log and into the GUI
-            using var p = Process.Start(new ProcessStartInfo("powershell.exe",
-                $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" -InputFile \"{input}\" -OutputFile \"{output}\" -LogFile \"{log}\"")
-            { UseShellExecute = false, CreateNoWindow = true }) ?? throw new InvalidOperationException("Windows PowerShell konnte nicht gestartet werden.");
-            var shown = 0;
-            void Tail()
+        JsonNode? group = null;
+        if (restrictSenders)
+        {
+            var alias = c.Senders.ExchangeScopeGroup is { Length: > 0 } g ? g : GroupAlias(Environment.MachineName);
+            progress($"Gruppe {alias} …");
+            group = await exo.GetAsync("Get-DistributionGroup", alias, ct);
+            if (group is null)
+            {
+                await exo.InvokeAsync("New-DistributionGroup", new JsonObject
+                {
+                    ["Name"] = $"{Paths.DisplayName} Absender ({Environment.MachineName})",
+                    ["Alias"] = alias[..(alias.IndexOf('@') is var i and > 0 ? i : alias.Length)],
+                    ["Type"] = "Security",
+                    ["MemberJoinRestriction"] = "Closed",
+                    ["MemberDepartRestriction"] = "Closed",
+                }, ct);
+                group = await Retry(async () => await exo.GetAsync("Get-DistributionGroup", alias, ct) ?? throw NotYet("Gruppe"), ct);
+                await Retry(() => exo.InvokeAsync("Set-DistributionGroup", new JsonObject
+                {
+                    ["Identity"] = group["PrimarySmtpAddress"]!.ToString(),
+                    ["HiddenFromAddressListsEnabled"] = true,
+                    ["RequireSenderAuthenticationEnabled"] = true,
+                }, ct), ct);
+            }
+            result.Group = group["PrimarySmtpAddress"]!.ToString().ToLowerInvariant();
+
+            progress("Mitglieder der Gruppe …");
+            (result.Members, result.NotFound) = await Retry(() => exo.SyncGroupAsync(result.Group, result.Mailbox ?? c.Senders.SharedMailbox, c.Senders.AllowedAddresses, ct), ct);
+
+            progress("Verwaltungsbereich und Rolle Application Mail.Send …");
+            await EnsureScopeAsync(exo, ScopeName(appId), $"MemberOfGroup -eq '{group["DistinguishedName"]}'", ct);
+            var assigned = await TryListAsync(exo, "Get-ManagementRoleAssignment", new JsonObject { ["RoleAssignee"] = appId, ["Role"] = "Application Mail.Send" }, ct);
+            if (assigned.Count == 0)
+                await Retry(() => exo.InvokeAsync("New-ManagementRoleAssignment", new JsonObject
+                {
+                    ["App"] = appId,
+                    ["Role"] = "Application Mail.Send",
+                    ["CustomResourceScope"] = ScopeName(appId),
+                }, ct), ct);
+        }
+
+        // what the service may change itself: only the shared mailbox and the sender group
+        var targets = new[] { result.Mailbox, result.Group }.OfType<string>().ToList();
+        if (targets.Count > 0)
+        {
+            progress("Rechte der App für Aliasse und Gruppenmitglieder (nur dieses Postfach und diese Gruppe) …");
+            await EnsureScopeAsync(exo, WriteScopeName(appId), string.Join(" -or ", targets.Select(t => $"(PrimarySmtpAddress -eq '{t}')")), ct);
+            var rg = RoleGroupName(appId);
+            if (await exo.GetAsync("Get-RoleGroup", rg, ct) is null)
+                await exo.InvokeAsync("New-RoleGroup", new JsonObject
+                {
+                    ["Name"] = rg,
+                    ["Description"] = "M365 SMTP Proxy: Aliasse des freigegebenen Postfachs und Mitglieder der Absendergruppe pflegen",
+                }, ct);
+            var roles = new List<string>();
+            if (result.Mailbox is not null) roles.Add("Mail Recipients");
+            if (result.Group is not null) roles.AddRange(["Distribution Groups", "Security Group Creation and Membership"]);
+            var existing = await TryListAsync(exo, "Get-ManagementRoleAssignment", new JsonObject { ["RoleAssignee"] = rg }, ct);
+            foreach (var role in roles.Where(r => !existing.Any(e => e?["Role"]?.ToString() == r)))
             {
                 try
                 {
-                    if (!File.Exists(log)) return;
-                    using var fs = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                    var lines = new StreamReader(fs).ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                    for (; shown < lines.Length; shown++) progress(lines[shown].TrimEnd('\r'));
+                    await Retry(() => exo.InvokeAsync("New-ManagementRoleAssignment", new JsonObject
+                    {
+                        ["SecurityGroup"] = rg,
+                        ["Role"] = role,
+                        ["CustomRecipientWriteScope"] = WriteScopeName(appId),
+                    }, ct), ct);
                 }
-                catch (IOException) { }
+                catch (GraphException ex)
+                {
+                    progress($"Rolle {role} konnte nicht zugewiesen werden: {ex.Message}");
+                    result.MissingRoles.Add(role);
+                }
             }
-            var deadline = DateTime.UtcNow.AddMinutes(15);
-            while (!p.HasExited)
+            await Retry(async () =>
             {
-                Tail();
-                if (DateTime.UtcNow > deadline) { try { p.Kill(true); } catch { } break; }
-                await Task.Delay(500, ct);
-            }
-            Tail();
-            return JsonFile.Read<ExchangeSetupResult>(output)
-                   ?? new ExchangeSetupResult { Error = "Exchange-Skript ohne Ergebnis beendet (Zeitüberschreitung oder Anmeldung abgebrochen)." };
+                try
+                {
+                    await exo.InvokeAsync("Add-RoleGroupMember", new JsonObject
+                    {
+                        ["Identity"] = rg,
+                        ["Member"] = spIdentity,
+                        ["BypassSecurityGroupManagerCheck"] = true,
+                    }, ct);
+                }
+                catch (GraphException ex) when (ex.Message.Contains("already a member", StringComparison.OrdinalIgnoreCase)) { }
+            }, ct);
         }
-        finally
+        progress("Exchange ist eingerichtet. Änderungen wirken nach einigen Minuten bis zu einer Stunde.");
+        return result;
+    }
+
+    static async Task<JsonArray> TryListAsync(ExchangeAdmin exo, string cmdlet, JsonObject parameters, CancellationToken ct)
+    {
+        try { return await exo.InvokeAsync(cmdlet, parameters, ct); }
+        catch (GraphException ex) when (ExchangeAdmin.IsNotFound(ex)) { return []; }
+    }
+
+    static async Task EnsureScopeAsync(ExchangeAdmin exo, string name, string filter, CancellationToken ct)
+    {
+        if (await exo.GetAsync("Get-ManagementScope", name, ct) is null)
+            await exo.InvokeAsync("New-ManagementScope", new JsonObject { ["Name"] = name, ["RecipientRestrictionFilter"] = filter }, ct);
+        else
+            await exo.InvokeAsync("Set-ManagementScope", new JsonObject { ["Identity"] = name, ["RecipientRestrictionFilter"] = filter }, ct);
+    }
+
+    static GraphException NotYet(string what) => new(System.Net.HttpStatusCode.NotFound, "exchange", $"{what} ist in Exchange noch nicht sichtbar");
+
+    /// <summary>New objects need a moment until every Exchange server knows them.</summary>
+    static async Task<T> Retry<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        for (var i = 1; ; i++)
         {
-            try { Directory.Delete(dir, true); } catch { }
+            try { return await action(); }
+            catch (GraphException) when (i < 10) { await Task.Delay(TimeSpan.FromSeconds(6), ct); }
         }
     }
 
-    // ASCII only: no typographic quotes in PowerShell strings.
-    const string Script = """
-        param([string]$InputFile, [string]$OutputFile, [string]$LogFile)
-        $ErrorActionPreference = 'Stop'
-        $ProgressPreference = 'SilentlyContinue'
-        # runs without a window: progress lines go to the log file the GUI shows
-        function Write-Step([string]$Text) { Add-Content -Path $LogFile -Value $Text -Encoding UTF8 }
-        # new mailboxes and service principals need a moment until every Exchange server knows them
-        function Invoke-Retry([scriptblock]$Action) {
-            for ($i = 1; ; $i++) {
-                try { return & $Action } catch { if ($i -ge 10) { throw }; Start-Sleep -Seconds 6 }
-            }
-        }
-        $in = Get-Content -Raw -Path $InputFile | ConvertFrom-Json
-        $result = [ordered]@{ ok = $false; error = $null; group = $null; members = @(); notFound = @(); mailbox = $null; aliases = @(); taken = @() }
-        try {
-            # -DisableWAM (sign-in in the browser) needs ExchangeOnlineManagement 3.7 or newer; WAM fails in elevated processes
-            $installed = Get-Module -ListAvailable -Name ExchangeOnlineManagement | Sort-Object Version -Descending | Select-Object -First 1
-            if (-not $installed -or $installed.Version -lt [version]'3.7.0') {
-                Write-Step 'Modul ExchangeOnlineManagement wird installiert (aktueller Benutzer) ...'
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
-                    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
-                }
-                Install-Module ExchangeOnlineManagement -MinimumVersion 3.7.0 -Scope CurrentUser -Force -AllowClobber
-            }
-            Import-Module ExchangeOnlineManagement -MinimumVersion 3.7.0
-            Write-Step 'Anmeldung an Exchange Online im Browser (Exchange-Administrator) ...'
-            $connect = @{ ShowBanner = $false; DisableWAM = $true }
-            if ($in.organization) { $connect.Organization = $in.organization }
-            Connect-ExchangeOnline @connect
-
-            Write-Step 'Dienstprinzipal in Exchange ...'
-            if (-not (Get-ServicePrincipal -Identity $in.appId -ErrorAction SilentlyContinue)) {
-                New-ServicePrincipal -AppId $in.appId -ObjectId $in.servicePrincipalId -DisplayName $in.displayName | Out-Null
-            }
-
-            if ($in.mailbox) {
-                if (-not (Get-OrganizationConfig).SendFromAliasEnabled) {
-                    Write-Step 'Senden von Aliasadressen wird eingeschaltet (SendFromAliasEnabled) ...'
-                    Set-OrganizationConfig -SendFromAliasEnabled $true
-                }
-
-                Write-Step "Freigegebenes Postfach $($in.mailbox) ..."
-                $mbx = Get-Mailbox -Identity $in.mailbox -ErrorAction SilentlyContinue
-                if (-not $mbx) {
-                    $other = Get-Recipient -Identity $in.mailbox -ErrorAction SilentlyContinue
-                    if ($other) { throw "$($in.mailbox) ist bereits vergeben ($($other.RecipientTypeDetails) $($other.Name)) und kein Postfach." }
-                    $mbx = New-Mailbox -Shared -Name $in.mailboxName -DisplayName $in.mailboxName -Alias $in.mailboxAlias -PrimarySmtpAddress $in.mailbox
-                    Write-Step 'Postfach angelegt.'
-                    Invoke-Retry { Set-Mailbox -Identity $in.mailbox -HiddenFromAddressListsEnabled $true }
-                } else {
-                    Write-Step 'Postfach ist schon vorhanden.'
-                }
-                $primary = ([string]$mbx.PrimarySmtpAddress).ToLower()
-
-                foreach ($a in @($in.aliases)) {
-                    if (-not $a) { continue }
-                    $r = Get-Recipient -Identity $a -ErrorAction SilentlyContinue
-                    if ($r) {
-                        if (([string]$r.PrimarySmtpAddress).ToLower() -eq $primary) { Write-Step "Alias $a ist schon vorhanden." }
-                        else { Write-Step "$a gehoert zu $($r.PrimarySmtpAddress) ($($r.RecipientTypeDetails)), uebersprungen."; $result.taken += $a }
-                        continue
-                    }
-                    Write-Step "Alias $a wird angelegt ..."
-                    Invoke-Retry { Set-Mailbox -Identity $primary -EmailAddresses @{ Add = "smtp:$a" } }
-                }
-                $mbx = Invoke-Retry { Get-Mailbox -Identity $primary }
-                $result.mailbox = $primary
-                $result.aliases = @($mbx.EmailAddresses | ForEach-Object { [string]$_ } | Where-Object { $_ -like 'smtp:*' } | ForEach-Object { $_.Substring(5).ToLower() } | Sort-Object)
-
-                Write-Step 'Recht der App zum Anlegen von Aliassen (nur dieses Postfach) ...'
-                $filter = "PrimarySmtpAddress -eq '$primary'"
-                if (Get-ManagementScope -Identity $in.mailboxScopeName -ErrorAction SilentlyContinue) {
-                    Set-ManagementScope -Identity $in.mailboxScopeName -RecipientRestrictionFilter $filter
-                } else {
-                    New-ManagementScope -Name $in.mailboxScopeName -RecipientRestrictionFilter $filter | Out-Null
-                }
-                if (-not (Get-RoleGroup -Identity $in.roleGroupName -ErrorAction SilentlyContinue)) {
-                    New-RoleGroup -Name $in.roleGroupName -Roles 'Mail Recipients' -CustomRecipientWriteScope $in.mailboxScopeName -Description 'M365 SMTP Proxy: Aliasse des freigegebenen Postfachs anlegen' | Out-Null
-                }
-                $sp = Invoke-Retry { Get-ServicePrincipal -Identity $in.appId }
-                Invoke-Retry {
-                    try { Add-RoleGroupMember -Identity $in.roleGroupName -Member ([string]$sp.Identity) -BypassSecurityGroupManagerCheck }
-                    catch { if ($_.Exception.Message -notmatch 'already a member') { throw } }
-                }
-            }
-
-            if ($in.restrictSenders) {
-                Write-Step "Gruppe $($in.groupAlias) ..."
-                $group = Get-DistributionGroup -Identity $in.groupAlias -ErrorAction SilentlyContinue
-                if (-not $group) {
-                    $group = New-DistributionGroup -Name $in.groupName -Alias $in.groupAlias -Type Security -MemberJoinRestriction Closed -MemberDepartRestriction Closed
-                    Set-DistributionGroup -Identity $group.Identity -HiddenFromAddressListsEnabled $true -RequireSenderAuthenticationEnabled $true
-                }
-                $result.group = [string]$group.PrimarySmtpAddress
-
-                # the shared mailbox and every allowed address (an alias resolves to the shared mailbox)
-                $members = @()
-                if ($result.mailbox) { $members += $result.mailbox }
-                foreach ($m in @($in.members)) {
-                    if (-not $m) { continue }
-                    $r = Get-Recipient -Identity $m -ErrorAction SilentlyContinue
-                    if ($r) { $members += ([string]$r.PrimarySmtpAddress).ToLower() } elseif (-not $result.mailbox) { $result.notFound += $m }
-                }
-                $members = @($members | Sort-Object -Unique)
-                Write-Step "Mitglieder werden gesetzt ($($members.Count)) ..."
-                Invoke-Retry { Update-DistributionGroupMember -Identity $group.Identity -Members $members -BypassSecurityGroupManagerCheck -Confirm:$false }
-                $result.members = $members
-
-                Write-Step 'Verwaltungsbereich ...'
-                $filter = "MemberOfGroup -eq '$($group.DistinguishedName)'"
-                if (Get-ManagementScope -Identity $in.scopeName -ErrorAction SilentlyContinue) {
-                    Set-ManagementScope -Identity $in.scopeName -RecipientRestrictionFilter $filter
-                } else {
-                    New-ManagementScope -Name $in.scopeName -RecipientRestrictionFilter $filter | Out-Null
-                }
-
-                Write-Step 'Rolle Application Mail.Send ...'
-                $assigned = Get-ManagementRoleAssignment -RoleAssignee $in.appId -Role 'Application Mail.Send' -ErrorAction SilentlyContinue
-                if (-not $assigned) {
-                    New-ManagementRoleAssignment -App $in.appId -Role 'Application Mail.Send' -CustomResourceScope $in.scopeName | Out-Null
-                }
-            }
-            $result.ok = $true
-            Write-Step 'Fertig. Aenderungen in Exchange wirken nach bis zu einer Stunde.'
-        } catch {
-            $result.error = $_.Exception.Message
-            Write-Step "Fehler: $($_.Exception.Message)"
-        } finally {
-            try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-            $result | ConvertTo-Json -Depth 4 | Set-Content -Path $OutputFile -Encoding UTF8
-        }
-        """;
+    static Task Retry(Func<Task> action, CancellationToken ct) => Retry(async () => { await action(); return true; }, ct);
 }

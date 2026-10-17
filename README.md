@@ -17,8 +17,10 @@ Server beliebig viele Proxys zentral (Einstellungen, Protokolle, Updates).
   noreply@ und absender@). Sendet ein Gerät als Adresse ohne Postfach, legt der Dienst sie als Alias an und sendet aus
   dem freigegebenen Postfach mit dieser Absenderadresse (SendFromAliasEnabled). Die App darf in Exchange nur die
   Adressen dieses einen Postfachs ändern.
-- **Einrichtung per Klick**: Anmeldung als Administrator im Browser, das Tool legt die App-Registrierung mit
-  Zertifikat an (privater Schlüssel nicht exportierbar im Zertifikatspeicher des Computers).
+- **Einrichtung per Klick, danach ohne Benutzer**: einmalige Anmeldung als Administrator im Browser; das Tool legt
+  die App-Registrierung mit Zertifikat an (privater Schlüssel nicht exportierbar im Zertifikatspeicher des Computers)
+  und richtet Exchange mit derselben Anmeldung ein. Danach nur noch App + Zertifikat: Aliasse, Exchange-Gruppe und die
+  Erneuerung des Zertifikats erledigt der Dienst selbst.
 - **Zuverlässige Zustellung**: Warteschlange auf der Festplatte, Wiederholung bei vorübergehenden Fehlern, große
   Nachrichten bis 150 MB über Upload-Sitzungen, Empfänger exakt nach SMTP-Umschlag (auch Bcc).
 - **Protokolle** ohne Nachrichteninhalt (Betreff optional), Aufbewahrung einstellbar.

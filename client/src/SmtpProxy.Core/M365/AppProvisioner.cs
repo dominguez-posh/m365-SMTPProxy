@@ -5,16 +5,20 @@ using SmtpProxy.Core.Graph;
 namespace SmtpProxy.Core.M365;
 
 /// <summary>
-/// Creates the app registration of this proxy with an admin token: certificate in the machine store,
-/// application permissions Domain.Read.All, Exchange.ManageAsApp (aliases of the shared mailbox, limited by an Exchange
-/// role group) and (without Exchange restriction) Mail.Send, admin consent.
-/// With Exchange restriction Mail.Send comes from RBAC for Applications instead (see <see cref="ExchangeScope"/>).
+/// Creates the app registration of this proxy with an admin token: certificate in the machine store and the
+/// application permissions the service needs to run without any user:
+/// - Domain.Read.All: tenant domains
+/// - Mail.Send (only without Exchange restriction; with it, Mail.Send comes from RBAC for Applications)
+/// - Exchange.ManageAsApp: aliases of the shared mailbox and members of the sender group (Exchange role group whose
+///   write scope covers only these two, see <see cref="ExchangeSetup"/>)
+/// - Application.ReadWrite.OwnedBy with the app as its own owner: the service renews its certificate itself
 /// </summary>
 public static class AppProvisioner
 {
     public const string GraphAppId = "00000003-0000-0000-c000-000000000000";
     public const string ExchangeAppId = "00000002-0000-0ff1-ce00-000000000000";
-    public const string ManageAsApp = "Exchange.ManageAsApp";
+    /// <summary>Raise when the app needs new permissions; older connections get them in the next Exchange setup.</summary>
+    public const int PermissionsVersion = 2;
 
     /// <summary>Delegated scopes of the admin sign-in.</summary>
     public static readonly string[] AdminScopes =
@@ -28,16 +32,6 @@ public static class AppProvisioner
         var org = (await graph.GetAsync("/organization?$select=id,displayName", ct))?["value"]?[0];
         var tenantId = org?["id"]?.GetValue<string>() ?? admin.TenantId;
         var tenantName = org?["displayName"]?.GetValue<string>() ?? "";
-
-        progress("Berechtigungen von Microsoft Graph werden gelesen …");
-        var graphSp = await graph.GetAsync($"/servicePrincipals(appId='{GraphAppId}')?$select=id,appRoles", ct)
-                      ?? throw new InvalidOperationException("Microsoft Graph wurde im Tenant nicht gefunden.");
-        string RoleId(string value) => graphSp["appRoles"]!.AsArray()
-            .First(r => r!["value"]!.GetValue<string>() == value)!["id"]!.GetValue<string>();
-        var roles = new List<string> { RoleId("Domain.Read.All") };
-        if (!exchangeScope) roles.Add(RoleId("Mail.Send"));
-        var exoSp = await ExchangeServicePrincipalAsync(graph, ct);
-        var exoRole = ExchangeRoleId(exoSp);
 
         progress("Zertifikat wird im Zertifikatspeicher des Computers erstellt …");
         var host = Environment.MachineName;
@@ -58,15 +52,6 @@ public static class AppProvisioner
                     ["key"] = Convert.ToBase64String(cert.RawData),
                     ["displayName"] = cert.Subject,
                 }),
-                ["requiredResourceAccess"] = new JsonArray(new JsonObject
-                {
-                    ["resourceAppId"] = GraphAppId,
-                    ["resourceAccess"] = new JsonArray(roles.Select(r => (JsonNode)new JsonObject { ["id"] = r, ["type"] = "Role" }).ToArray()),
-                }, new JsonObject
-                {
-                    ["resourceAppId"] = ExchangeAppId,
-                    ["resourceAccess"] = new JsonArray(new JsonObject { ["id"] = exoRole, ["type"] = "Role" }),
-                }),
             }, ct);
             var appId = app!["appId"]!.GetValue<string>();
             var appObjectId = app["id"]!.GetValue<string>();
@@ -74,16 +59,6 @@ public static class AppProvisioner
             progress("Dienstprinzipal wird angelegt …");
             var sp = await RetryAsync(() => graph.PostAsync("/servicePrincipals", new JsonObject { ["appId"] = appId }, ct), ct);
             var spId = sp!["id"]!.GetValue<string>();
-
-            progress("Administratorzustimmung wird erteilt …");
-            foreach (var role in roles)
-                await RetryAsync(() => graph.PostAsync($"/servicePrincipals/{graphSp["id"]!.GetValue<string>()}/appRoleAssignedTo", new JsonObject
-                {
-                    ["principalId"] = spId,
-                    ["resourceId"] = graphSp["id"]!.GetValue<string>(),
-                    ["appRoleId"] = role,
-                }, ct), ct);
-            await GrantAsync(graph, spId, exoSp["id"]!.GetValue<string>(), exoRole, ct);
 
             var connection = new M365Connection
             {
@@ -96,8 +71,8 @@ public static class AppProvisioner
                 CertificateExpires = cert.NotAfter.ToUniversalTime(),
                 ConnectedAt = DateTimeOffset.UtcNow,
                 ConnectedBy = admin.User,
-                ExchangeAccess = true,
             };
+            await EnsureAppAccessAsync(admin, connection, exchangeScope, progress, ct);
 
             progress("Anmeldung der App wird geprüft (neue Apps brauchen bis zu zwei Minuten) …");
             var appGraph = new GraphClient(new CertificateTokenSource(tenantId, appId, cert).GetAsync);
@@ -126,52 +101,80 @@ public static class AppProvisioner
         }
     }
 
-    static async Task<JsonNode> ExchangeServicePrincipalAsync(GraphClient graph, CancellationToken ct) =>
-        await graph.GetAsync($"/servicePrincipals(appId='{ExchangeAppId}')?$select=id,appRoles", ct)
-        ?? throw new InvalidOperationException("Office 365 Exchange Online wurde im Tenant nicht gefunden.");
-
-    static string ExchangeRoleId(JsonNode exoSp) => exoSp["appRoles"]!.AsArray()
-        .First(r => r!["value"]!.GetValue<string>() == ManageAsApp)!["id"]!.GetValue<string>();
-
-    static Task GrantAsync(GraphClient graph, string principalId, string resourceId, string roleId, CancellationToken ct) =>
-        RetryAsync(() => graph.PostAsync($"/servicePrincipals/{resourceId}/appRoleAssignedTo", new JsonObject
-        {
-            ["principalId"] = principalId,
-            ["resourceId"] = resourceId,
-            ["appRoleId"] = roleId,
-        }, ct), ct);
-
     /// <summary>
-    /// Adds Exchange.ManageAsApp to an app connected before version 0.2.0 (admin token). Idempotent.
+    /// Gives the app every permission of <see cref="PermissionsVersion"/> (declared and consented) and makes it the
+    /// owner of its own registration. Idempotent; also upgrades apps of older versions. Sets PermissionsVersion.
     /// </summary>
-    public static async Task EnsureExchangeAccessAsync(DelegatedToken admin, M365Connection c, Action<string> progress, CancellationToken ct)
+    public static async Task EnsureAppAccessAsync(DelegatedToken admin, M365Connection c, bool exchangeScope, Action<string> progress, CancellationToken ct)
     {
         var graph = GraphClient.WithToken(admin.AccessToken);
-        var exoSp = await ExchangeServicePrincipalAsync(graph, ct);
-        var exoSpId = exoSp["id"]!.GetValue<string>();
-        var roleId = ExchangeRoleId(exoSp);
+        var graphSp = await ResourceAsync(graph, GraphAppId, "Microsoft Graph", ct);
+        var exoSp = await ResourceAsync(graph, ExchangeAppId, "Office 365 Exchange Online", ct);
+        var wanted = new List<(string ResourceAppId, JsonNode Sp, string Role)>
+        {
+            (GraphAppId, graphSp, "Domain.Read.All"),
+            (GraphAppId, graphSp, "Application.ReadWrite.OwnedBy"),
+            (ExchangeAppId, exoSp, "Exchange.ManageAsApp"),
+        };
+        if (!exchangeScope) wanted.Add((GraphAppId, graphSp, "Mail.Send"));
 
-        var app = await graph.GetAsync($"/applications/{c.AppObjectId}?$select=requiredResourceAccess", ct)
+        // declared permissions (shown under "API permissions" of the app)
+        var app = await RetryAsync(() => graph.GetAsync($"/applications/{c.AppObjectId}?$select=requiredResourceAccess", ct), ct)
                   ?? throw new InvalidOperationException("App-Registrierung nicht gefunden.");
-        var access = app["requiredResourceAccess"]?.AsArray() ?? [];
-        var exo = access.FirstOrDefault(a => a?["resourceAppId"]?.GetValue<string>() == ExchangeAppId);
-        if (exo?["resourceAccess"]?.AsArray().Any(r => r?["id"]?.GetValue<string>() == roleId) != true)
+        var access = JsonNode.Parse(app["requiredResourceAccess"]?.ToJsonString() ?? "[]")!.AsArray();
+        var changed = false;
+        foreach (var (resource, sp, role) in wanted)
         {
-            progress("App erhält die Berechtigung Exchange.ManageAsApp …");
-            var next = JsonNode.Parse(access.ToJsonString())!.AsArray();
-            var entry = next.FirstOrDefault(a => a?["resourceAppId"]?.GetValue<string>() == ExchangeAppId);
-            if (entry is null) next.Add(entry = new JsonObject { ["resourceAppId"] = ExchangeAppId, ["resourceAccess"] = new JsonArray() });
+            var roleId = RoleId(sp, role);
+            var entry = access.FirstOrDefault(a => a?["resourceAppId"]?.GetValue<string>() == resource);
+            if (entry is null) access.Add(entry = new JsonObject { ["resourceAppId"] = resource, ["resourceAccess"] = new JsonArray() });
+            if (entry["resourceAccess"]!.AsArray().Any(r => r?["id"]?.GetValue<string>() == roleId)) continue;
             entry["resourceAccess"]!.AsArray().Add(new JsonObject { ["id"] = roleId, ["type"] = "Role" });
-            await graph.PatchAsync($"/applications/{c.AppObjectId}", new JsonObject { ["requiredResourceAccess"] = next }, ct);
+            changed = true;
+        }
+        if (changed)
+        {
+            progress("Berechtigungen der App werden eingetragen …");
+            await graph.PatchAsync($"/applications/{c.AppObjectId}", new JsonObject { ["requiredResourceAccess"] = access }, ct);
         }
 
-        var assigned = await graph.GetAllAsync($"/servicePrincipals/{c.ServicePrincipalId}/appRoleAssignments", ct);
-        if (!assigned.Any(a => a["appRoleId"]?.GetValue<string>() == roleId && a["resourceId"]?.GetValue<string>() == exoSpId))
+        // admin consent
+        var assigned = await RetryAsync(async () => new JsonArray((await graph.GetAllAsync($"/servicePrincipals/{c.ServicePrincipalId}/appRoleAssignments", ct))
+            .Select(a => a.DeepClone()).ToArray()), ct);
+        foreach (var (_, sp, role) in wanted)
         {
-            progress("Administratorzustimmung für Exchange.ManageAsApp …");
-            await GrantAsync(graph, c.ServicePrincipalId, exoSpId, roleId, ct);
+            var roleId = RoleId(sp, role);
+            var resourceId = sp["id"]!.GetValue<string>();
+            if (assigned!.AsArray().Any(a => a?["appRoleId"]?.GetValue<string>() == roleId && a?["resourceId"]?.GetValue<string>() == resourceId)) continue;
+            progress($"Administratorzustimmung: {role} …");
+            await RetryAsync(() => graph.PostAsync($"/servicePrincipals/{resourceId}/appRoleAssignedTo", new JsonObject
+            {
+                ["principalId"] = c.ServicePrincipalId,
+                ["resourceId"] = resourceId,
+                ["appRoleId"] = roleId,
+            }, ct), ct);
         }
+
+        // owner of itself: Application.ReadWrite.OwnedBy then covers exactly this one app (certificate renewal)
+        var owners = await RetryAsync(async () => new JsonArray((await graph.GetAllAsync($"/applications/{c.AppObjectId}/owners?$select=id", ct))
+            .Select(o => o.DeepClone()).ToArray()), ct);
+        if (!owners!.AsArray().Any(o => o?["id"]?.GetValue<string>() == c.ServicePrincipalId))
+        {
+            progress("Die App wird Besitzerin ihrer eigenen Registrierung (für die Zertifikatserneuerung) …");
+            await RetryAsync(() => graph.PostAsync($"/applications/{c.AppObjectId}/owners/$ref", new JsonObject
+            {
+                ["@odata.id"] = $"https://graph.microsoft.com/v1.0/directoryObjects/{c.ServicePrincipalId}",
+            }, ct), ct);
+        }
+        c.PermissionsVersion = PermissionsVersion;
     }
+
+    static async Task<JsonNode> ResourceAsync(GraphClient graph, string appId, string name, CancellationToken ct) =>
+        await graph.GetAsync($"/servicePrincipals(appId='{appId}')?$select=id,appRoles", ct)
+        ?? throw new InvalidOperationException($"{name} wurde im Tenant nicht gefunden.");
+
+    static string RoleId(JsonNode sp, string value) => sp["appRoles"]!.AsArray()
+        .First(r => r!["value"]!.GetValue<string>() == value)!["id"]!.GetValue<string>();
 
     /// <summary>Deletes the app registration (admin token) and the local certificate.</summary>
     public static async Task RemoveAsync(DelegatedToken admin, M365Connection c, CancellationToken ct)

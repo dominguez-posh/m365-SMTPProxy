@@ -111,11 +111,31 @@ public sealed class SenderRouter(Func<ProxyConfig> config, M365Session m365)
         ConfigStore.Save(fresh, added ? $"Dienst (Alias {address} angelegt)" : $"Dienst (Alias {address} gefunden)");
     }
 
+    string? _groupSynced;
+
     /// <summary>
-    /// Prepares the allowed addresses ahead of the first message: addresses without a recipient become aliases,
-    /// so Exchange has time to pick them up. Addresses with an own mailbox stay as they are.
+    /// Exchange side of the allowed addresses, without an administrator: addresses without a recipient become aliases
+    /// (so Exchange has time to pick them up before the first message), then the sender group gets the shared
+    /// mailbox and the recipients of all allowed addresses (only when the list changed since the last run).
     /// </summary>
     public async Task SyncAsync(CancellationToken ct)
+    {
+        await SyncAliasesAsync(ct);
+        var c = config();
+        var s = c.Senders;
+        if (!s.ExchangeScopeEnabled || s.ExchangeScopeGroup.Length == 0 || m365.Exchange() is not { } exo) return;
+        var key = string.Join(',', s.AllowedAddresses.Order().Prepend(s.SharedMailbox).Prepend(s.ExchangeScopeGroup)).ToLowerInvariant();
+        if (key == _groupSynced) return;
+        var (members, notFound) = await exo.SyncGroupAsync(s.ExchangeScopeGroup, s.SharedMailbox, s.AllowedAddresses, ct);
+        _groupSynced = key;
+        Logs.Info($"Exchange-Gruppe {s.ExchangeScopeGroup} abgeglichen: {string.Join(", ", members)}" +
+                  (notFound.Count > 0 ? $"; ohne Empfänger: {string.Join(", ", notFound)}" : ""));
+        var fresh = ConfigStore.Load();
+        fresh.Senders.ExchangeScopeSyncedAt = DateTimeOffset.UtcNow;
+        ConfigStore.Save(fresh, "Dienst (Exchange-Gruppe abgeglichen)");
+    }
+
+    async Task SyncAliasesAsync(CancellationToken ct)
     {
         var c = config();
         if (c.Senders.SharedMailbox.Length == 0 || !c.Senders.AutoCreateAliases || m365.Exchange() is not { } exo) return;

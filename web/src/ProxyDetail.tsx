@@ -210,7 +210,10 @@ function StatusTab({ p }: { p: Proxy }) {
               <dt>Tenant</dt>
               <dd>{c.m365.tenantName || "–"}</dd>
               <dt>Zertifikat bis</dt>
-              <dd>{fmtDate(c.m365.certificateExpires)}</dd>
+              <dd>
+                {fmtDate(c.m365.certificateExpires)}
+                {(c.m365.permissionsVersion ?? 0) >= 2 && <div className="muted small">erneuert sich selbst 60 Tage vor Ablauf</div>}
+              </dd>
               <dt>Absender</dt>
               <dd>
                 {c.senders.exchangeScopeEnabled ? "in Exchange eingeschränkt" : "nur im Proxy geprüft"} · {c.senders.allowedAddresses.length} Adressen, {c.senders.allowedDomains.length} Domänen
@@ -334,9 +337,9 @@ function ConfigTab({ p, onSaved }: { p: Proxy; onSaved: (p: Proxy) => void }) {
       setShown(users.filter((u) => u.newPassword).map((u) => ({ name: u.name, password: u.newPassword! })));
       setUsers(users.map(({ newPassword, ...u }) => u));
       onSaved(x);
-      const exo = c.senders.exchangeScopeEnabled && lines(next.senders.allowedAddresses) !== lines(base.senders.allowedAddresses);
+      const exo = c.senders.exchangeScopeEnabled && (c.m365.permissionsVersion ?? 0) < 2 && lines(next.senders.allowedAddresses) !== lines(base.senders.allowedAddresses);
       toast("Gespeichert. Der Proxy übernimmt die Einstellungen beim nächsten Kontakt (innerhalb von etwa 30 Sekunden).");
-      if (exo) toast("Die Exchange-Einschränkung muss am Proxy abgeglichen werden (Oberfläche → Microsoft 365 → Absender in Exchange abgleichen).", "info");
+      if (exo) toast("Diese Verbindung ist älter: einmal am Proxy einrichten (Oberfläche → Microsoft 365 → In Exchange einrichten / abgleichen). Danach gleicht der Proxy Exchange selbst ab.", "info");
     } catch (e: any) {
       toast(e.message, "error");
     } finally {
