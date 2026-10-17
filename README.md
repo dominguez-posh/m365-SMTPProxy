@@ -13,6 +13,10 @@ Server beliebig viele Proxys zentral (Einstellungen, Protokolle, Updates).
 - **Erlaubte Absender**: nur Domänen des Tenants, zusätzlich Listen erlaubter Adressen/Domänen, je Benutzer weiter
   einschränkbar. Auf Wunsch auch in Exchange Online erzwungen (RBAC for Applications: die App darf nur als die
   Postfächer einer Gruppe senden).
+- **Absender ohne eigenes Postfach**: Das Tool legt ein freigegebenes Postfach an (z. B. smtpproxy@contoso.com, Aliasse
+  noreply@ und absender@). Sendet ein Gerät als Adresse ohne Postfach, legt der Dienst sie als Alias an und sendet aus
+  dem freigegebenen Postfach mit dieser Absenderadresse (SendFromAliasEnabled). Die App darf in Exchange nur die
+  Adressen dieses einen Postfachs ändern.
 - **Einrichtung per Klick**: Anmeldung als Administrator im Browser, das Tool legt die App-Registrierung mit
   Zertifikat an (privater Schlüssel nicht exportierbar im Zertifikatspeicher des Computers).
 - **Zuverlässige Zustellung**: Warteschlange auf der Festplatte, Wiederholung bei vorübergehenden Fehlern, große

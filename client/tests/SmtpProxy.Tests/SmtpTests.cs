@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using MimeKit;
 using SmtpProxy.Core.Config;
+using SmtpProxy.Core.Delivery;
 using SmtpProxy.Core.Graph;
 using SmtpProxy.Core.Smtp;
 
@@ -194,5 +195,59 @@ public class MailerTests
         Assert.Equal(["a@fabrikam.com"], m.To.Mailboxes.Select(x => x.Address));
         Assert.Empty(m.Cc);
         Assert.Equal(["hidden@fabrikam.com"], m.Bcc.Mailboxes.Select(x => x.Address));
+    }
+
+    [Fact]
+    public void From_becomes_the_alias_when_sending_from_the_shared_mailbox()
+    {
+        var m = new MimeMessage();
+        m.From.Add(new MailboxAddress("Scanner", "bounce@contoso.com"));
+        m.Sender = MailboxAddress.Parse("bounce@contoso.com");
+        GraphMailer.AlignFrom(m, "scan@contoso.com");
+        Assert.Equal("scan@contoso.com", m.From.Mailboxes.Single().Address);
+        Assert.Equal("Scanner", m.From.Mailboxes.Single().Name);
+        Assert.Null(m.Sender);
+    }
+}
+
+public class SharedMailboxTests
+{
+    static ProxyConfig Config() => new()
+    {
+        M365 = { Domains = ["contoso.com"] },
+        Senders = { ExchangeScopeEnabled = true, AllowedAddresses = ["scan@contoso.com"] },
+    };
+
+    [Fact]
+    public void Exchange_restriction_refuses_senders_outside_the_group()
+    {
+        var c = Config();
+        Assert.Null(SmtpPolicy.CheckSender(c, "scan@contoso.com", null));
+        c.Senders.AllowedAddresses = [];
+        Assert.NotNull(SmtpPolicy.CheckSender(c, "admin@contoso.com", null));
+    }
+
+    [Fact]
+    public void Aliases_of_the_shared_mailbox_pass_the_exchange_restriction()
+    {
+        var c = Config();
+        c.Senders.AllowedAddresses = [];
+        c.Senders.SharedMailbox = "smtpproxy@contoso.com";
+        c.Senders.SharedMailboxAliases = ["noreply@contoso.com"];
+        c.Senders.AutoCreateAliases = false;
+        Assert.Null(SmtpPolicy.CheckSender(c, "NOREPLY@contoso.com", null));
+        Assert.True(SenderRouter.IsAlias(c, "smtpproxy@contoso.com"));
+        Assert.NotNull(SmtpPolicy.CheckSender(c, "neu@contoso.com", null));
+        // automatic aliases: every tenant address may become one
+        c.Senders.AutoCreateAliases = true;
+        Assert.Null(SmtpPolicy.CheckSender(c, "neu@contoso.com", null));
+        Assert.NotNull(SmtpPolicy.CheckSender(c, "neu@fabrikam.com", null));
+    }
+
+    [Fact]
+    public void Missing_mailbox_is_recognised()
+    {
+        Assert.True(SenderRouter.IsNoMailbox(new GraphException(System.Net.HttpStatusCode.NotFound, "ErrorInvalidUser", "x")));
+        Assert.False(SenderRouter.IsNoMailbox(new GraphException(System.Net.HttpStatusCode.Forbidden, "ErrorAccessDenied", "x")));
     }
 }

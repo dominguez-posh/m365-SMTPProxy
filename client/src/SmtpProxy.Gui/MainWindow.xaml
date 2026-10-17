@@ -79,10 +79,24 @@
                             </StackPanel>
                         </Border>
                         <CheckBox x:Name="ExchangeScopeCheck" Content="Absender zusätzlich in Exchange Online einschränken (empfohlen)" IsChecked="True" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ (Exchange-Gruppe und RBAC for Applications). Dafür meldet sich ein Exchange-Administrator im Browser an." />
+                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ und das freigegebene Postfach (Exchange-Gruppe und RBAC for Applications). Dafür meldet sich ein Exchange-Administrator im Browser an." />
+                        <CheckBox x:Name="SharedMailboxCheck" Content="Freigegebenes Postfach für Absender ohne eigenes Postfach einrichten (empfohlen)" IsChecked="True" Margin="0,8,0,0" />
+                        <Grid Margin="22,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="160" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="260" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="MailboxLocal" Text="smtpproxy" />
+                            <TextBlock Grid.Column="1" Text="@" VerticalAlignment="Center" Margin="6,0" />
+                            <ComboBox x:Name="MailboxDomain" Grid.Column="2" />
+                        </Grid>
+                        <CheckBox x:Name="AutoAliasCheck" Content="Fehlende Absenderadressen automatisch als Alias anlegen" IsChecked="True" Margin="22,6,0,0" />
+                        <TextBlock Style="{StaticResource Hint}" Margin="22,2,0,0" Text="Das Postfach bekommt die Aliasse noreply@ und absender@ (vorhandene werden übersprungen). Sendet ein Gerät als Adresse ohne eigenes Postfach, legt der Dienst sie als Alias an und sendet aus dem freigegebenen Postfach mit dieser Absenderadresse. Die App darf in Exchange nur die Adressen dieses einen Postfachs ändern. Ein neuer Alias wirkt nach einigen Minuten bis zu einer Stunde; bis dahin wartet die Nachricht in der Warteschlange." />
                         <WrapPanel Margin="0,4,0,0">
                             <Button x:Name="ConnectButton" Content="Mit Microsoft 365 verbinden" Click="Connect_Click" Margin="0,0,8,8" />
-                            <Button x:Name="ExchangeButton" Content="Absender in Exchange abgleichen" Click="Exchange_Click" Margin="0,0,8,8" />
+                            <Button x:Name="ExchangeButton" Content="In Exchange einrichten / abgleichen" Click="Exchange_Click" Margin="0,0,8,8" />
                             <Button x:Name="DomainsButton" Content="Domänen aktualisieren" Click="Domains_Click" Margin="0,0,8,8" />
                             <Button x:Name="TestButton" Content="Testnachricht senden" Click="TestMail_Click" Margin="0,0,8,8" />
                             <Button x:Name="DisconnectButton" Content="Verbindung trennen" Click="Disconnect_Click" Margin="0,0,8,8" />
@@ -151,8 +165,22 @@
                         <TextBlock Text="Erlaubte Absender" Style="{StaticResource H1}" />
                         <TextBlock Style="{StaticResource Hint}" Text="Der Proxy nimmt nur Nachrichten an, deren Absender (MAIL FROM) zu einer Domäne des Tenants gehört und hier erlaubt ist. Sind beide Listen leer, ist jede Adresse der Tenant-Domänen erlaubt." />
                         <TextBlock Text="Erlaubte Adressen" Style="{StaticResource Label}" />
-                        <TextBox x:Name="AllowedAddresses" Style="{StaticResource Multi}" Height="140" />
-                        <TextBlock Style="{StaticResource Hint}" Text="Eine Adresse je Zeile, z. B. scanner@contoso.com. Mit Exchange-Einschränkung sind dies die Postfächer, als die die App senden darf (Postfach oder freigegebenes Postfach)." />
+                        <ListBox x:Name="AllowedAddressList" Height="140" SelectionMode="Extended" />
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="200" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="240" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="NewAddressLocal" KeyDown="NewAddressLocal_KeyDown" />
+                            <TextBlock Grid.Column="1" Text="@" VerticalAlignment="Center" Margin="6,0" />
+                            <ComboBox x:Name="NewAddressDomain" Grid.Column="2" />
+                            <Button Grid.Column="3" Content="Hinzufügen" Click="AddAddress_Click" Margin="8,0,0,0" />
+                            <Button Grid.Column="4" Content="Entfernen" Click="RemoveAddress_Click" Margin="8,0,0,0" />
+                        </Grid>
+                        <TextBlock Style="{StaticResource Hint}" Text="Teil vor dem @ eintragen und die Domäne wählen. Hat die Adresse kein eigenes Postfach, wird sie als Alias des freigegebenen Postfachs angelegt (Microsoft 365). Mit Exchange-Einschränkung darf die App nur aus diesen Postfächern und dem freigegebenen Postfach senden." />
                         <TextBlock Text="Erlaubte Domänen" Style="{StaticResource Label}" />
                         <TextBox x:Name="AllowedDomains" Style="{StaticResource Multi}" />
                         <TextBlock Style="{StaticResource Hint}" Text="Jede Adresse dieser Domänen ist erlaubt. Bei Exchange-Einschränkung gilt das nur, wenn das Postfach auch in der Exchange-Gruppe ist." />

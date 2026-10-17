@@ -99,7 +99,8 @@ public sealed class GraphClient(Func<CancellationToken, Task<string>> token)
 }
 
 /// <summary>App-only token with certificate (client assertion, RFC 7523), cached until shortly before expiry.</summary>
-public sealed class CertificateTokenSource(string tenantId, string clientId, X509Certificate2 certificate)
+public sealed class CertificateTokenSource(string tenantId, string clientId, X509Certificate2 certificate,
+    string scope = "https://graph.microsoft.com/.default")
 {
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(60) };
     readonly SemaphoreSlim _gate = new(1, 1);
@@ -121,7 +122,7 @@ public sealed class CertificateTokenSource(string tenantId, string clientId, X50
             var form = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["client_id"] = clientId,
-                ["scope"] = "https://graph.microsoft.com/.default",
+                ["scope"] = scope,
                 ["grant_type"] = "client_credentials",
                 ["client_assertion_type"] = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
                 ["client_assertion"] = Assertion(endpoint),

@@ -27,7 +27,34 @@ public sealed class M365Session(Func<ProxyConfig> config)
 
     public GraphMailer? Mailer() => Graph() is { } g ? new GraphMailer(g) : null;
 
-    public void InvalidateToken() => _tokens?.Invalidate();
+    public void InvalidateToken()
+    {
+        _tokens?.Invalidate();
+        _exchangeTokens?.Invalidate();
+    }
+
+    CertificateTokenSource? _exchangeTokens;
+
+    /// <summary>Exchange Online app-only (aliases of the shared mailbox); null without connection.</summary>
+    public M365.ExchangeAdmin? Exchange()
+    {
+        var c = config().M365;
+        if (Tokens() is not { } graph || Organization(c.Domains) is not { } org) return null;
+        lock (_gate)
+        {
+            if (_exchangeTokens is not { } t || t.ClientId != graph.ClientId || t.Thumbprint != graph.Thumbprint || t.TenantId != graph.TenantId)
+            {
+                var cert = Certificates.Find(c.CertificateThumbprint);
+                if (cert is null) return null;
+                t = _exchangeTokens = new CertificateTokenSource(c.TenantId, c.ClientId, cert, M365.ExchangeAdmin.Scope);
+            }
+            return new M365.ExchangeAdmin(c.TenantId, org, t.GetAsync);
+        }
+    }
+
+    /// <summary>The initial domain (contoso.onmicrosoft.com), which Exchange needs as organization.</summary>
+    public static string? Organization(IEnumerable<string> domains) =>
+        domains.FirstOrDefault(d => d.EndsWith(".onmicrosoft.com", StringComparison.OrdinalIgnoreCase) && !d.EndsWith(".mail.onmicrosoft.com", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Verified domains of the tenant (Domain.Read.All).</summary>
     public static async Task<List<string>> ReadDomainsAsync(GraphClient graph, CancellationToken ct)

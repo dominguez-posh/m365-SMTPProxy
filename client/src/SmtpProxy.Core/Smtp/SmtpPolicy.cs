@@ -51,6 +51,12 @@ public static class SmtpPolicy
         if ((p.AllowedAddresses.Count > 0 || p.AllowedDomains.Count > 0) && !Matches(address, domain, p.AllowedAddresses.Concat(p.AllowedDomains.Select(d => "@" + d.TrimStart('@')))))
             return $"Absender {address} ist nicht freigegeben";
 
+        // Exchange only lets the app send from the members of the group (allowed addresses and the shared mailbox):
+        // refuse right away instead of failing later with 403
+        if (p.ExchangeScopeEnabled && !p.AllowedAddresses.Contains(address, StringComparer.OrdinalIgnoreCase)
+            && !Delivery.SenderRouter.IsAlias(c, address) && !(p.SharedMailbox.Length > 0 && p.AutoCreateAliases))
+            return $"Absender {address} ist nicht in der Exchange-Einschränkung freigegeben (unter „Erlaubte Adressen“ eintragen und in Exchange abgleichen)";
+
         if (user is { AllowedSenders.Count: > 0 } && !Matches(address, domain, user.AllowedSenders))
             return $"Benutzer {user.Name} darf nicht als {address} senden";
         return null;

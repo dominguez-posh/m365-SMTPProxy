@@ -1,5 +1,18 @@
 # Fortschritt
 
+## Stand 18.10.2026 (Client 0.2.0)
+
+- Freigegebenes Postfach für Absender ohne eigenes Postfach: Einrichtung in der GUI (Microsoft 365 → „In Exchange
+  einrichten / abgleichen“, auch automatisch beim Verbinden): Postfach smtpproxy@<Domäne>, Aliasse noreply@ und
+  absender@ (vorhandene übersprungen), SendFromAliasEnabled, Rollengruppe „Mail Recipients“ nur für dieses Postfach,
+  App-Berechtigung Exchange.ManageAsApp. Der Dienst legt fehlende Absender als Alias an (Exchange-REST InvokeCommand,
+  `ExchangeAdmin`) und sendet über `SenderRouter`.
+- Erlaubte Adressen in GUI und Web: Teil vor dem @ eintragen, Domäne aus den Tenant-Domänen wählen.
+- Fehler behoben: Mit Exchange-Einschränkung und leerer Adressliste nahm der Proxy jeden Absender an, Exchange lehnte
+  dann mit 403 ErrorAccessDenied ab. Jetzt lehnt der Proxy solche Absender schon bei MAIL FROM ab.
+- Noch nicht gegen einen echten Tenant geprüft: Einrichtungsskript (New-Mailbox, New-RoleGroup mit Dienstprinzipal),
+  Alias-Anlage per InvokeCommand (nicht dokumentierte Schnittstelle des EXO-Moduls v3), Senden per MIME mit Alias als From.
+
 ## Stand 17.10.2026 spät (Client 0.1.2)
 
 - Server läuft in Azure (Pipeline grün), erster Proxy installiert und freigegeben.

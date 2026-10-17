@@ -19,11 +19,13 @@ public sealed class GraphMailer(GraphClient graph)
     const int SmallAttachment = 3 * 1024 * 1024 - 256 * 1024;
     const int Chunk = 320 * 1024 * 10;
 
-    public async Task SendAsync(string from, IReadOnlyList<string> recipients, byte[] mime, CancellationToken ct)
+    /// <summary>Sends from <paramref name="mailbox"/>; if that is another mailbox (alias), From becomes the envelope sender.</summary>
+    public async Task SendAsync(string mailbox, string from, IReadOnlyList<string> recipients, byte[] mime, CancellationToken ct)
     {
         var message = MimeMessage.Load(new MemoryStream(mime));
         AlignRecipients(message, recipients);
-        var user = Uri.EscapeDataString(from);
+        if (!string.Equals(mailbox, from, StringComparison.OrdinalIgnoreCase)) AlignFrom(message, from);
+        var user = Uri.EscapeDataString(mailbox);
 
         var bytes = Serialize(message);
         if (bytes.Length <= DirectLimit)
@@ -76,6 +78,16 @@ public sealed class GraphMailer(GraphClient graph)
             }
         }
         foreach (var r in envelope.Where(r => !seen.Contains(r))) m.Bcc.Add(MailboxAddress.Parse(r));
+    }
+
+    /// <summary>Exchange sends as the From address: it must be the alias, otherwise Send As is denied.</summary>
+    internal static void AlignFrom(MimeMessage m, string from)
+    {
+        if (m.From.Mailboxes.Count() == 1 && string.Equals(m.From.Mailboxes.First().Address, from, StringComparison.OrdinalIgnoreCase)) return;
+        var name = m.From.Mailboxes.FirstOrDefault()?.Name ?? "";
+        m.From.Clear();
+        m.From.Add(new MailboxAddress(name, from));
+        m.Sender = null;
     }
 
     static void RemoveMailbox(InternetAddressList list, MailboxAddress mb)

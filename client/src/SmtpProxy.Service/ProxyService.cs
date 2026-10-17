@@ -20,6 +20,9 @@ public sealed class ProxyService : BackgroundService
     SmtpServer _smtp = null!;
     DeliveryWorker _delivery = null!;
     M365Session _m365 = null!;
+    SenderRouter _router = null!;
+    CancellationToken _stopping;
+    int _syncing;
     ManagementClient _management = null!;
     string? _m365Error;
     DateTimeOffset _domainsChecked = DateTimeOffset.MinValue;
@@ -34,7 +37,9 @@ public sealed class ProxyService : BackgroundService
 
         _queue = new MailQueue(() => _config);
         _m365 = new M365Session(() => _config);
-        _delivery = new DeliveryWorker(() => _config, _queue, _m365);
+        _stopping = ct;
+        _router = new SenderRouter(() => _config, _m365);
+        _delivery = new DeliveryWorker(() => _config, _queue, _m365, _router);
         _smtp = new SmtpServer(() => _config, _queue, msg => Logs.Info(msg));
         _management = new ManagementClient(() => _config, BuildStatus, Apply, _delivery.Wake);
 
@@ -86,6 +91,20 @@ public sealed class ProxyService : BackgroundService
         if (old.Smtp.Enabled != next.Smtp.Enabled || old.Smtp.ListenAddress != next.Smtp.ListenAddress || old.Smtp.Port != next.Smtp.Port || _smtp.ListeningOn is null)
             _ = _smtp.StartAsync();
         if (old.M365.CertificateThumbprint != next.M365.CertificateThumbprint) _delivery.Wake();
+        if (next.Senders.SharedMailbox.Length > 0 && (old.Senders.SharedMailbox != next.Senders.SharedMailbox ||
+                                                      old.Senders.AutoCreateAliases != next.Senders.AutoCreateAliases ||
+                                                      !old.Senders.AllowedAddresses.SequenceEqual(next.Senders.AllowedAddresses)))
+            _ = SyncAliasesAsync();
+    }
+
+    /// <summary>Allowed addresses without a mailbox become aliases of the shared mailbox before the first message.</summary>
+    async Task SyncAliasesAsync()
+    {
+        if (Interlocked.Exchange(ref _syncing, 1) == 1) return;
+        try { await _router.SyncAsync(_stopping); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Logs.Warn($"Abgleich der Aliasse: {ex.Message}"); }
+        finally { Interlocked.Exchange(ref _syncing, 0); }
     }
 
     ServiceStatus BuildStatus()
@@ -160,6 +179,7 @@ public sealed class ProxyService : BackgroundService
                     Logs.Warn(_m365Error);
                 }
             }
+            await SyncAliasesAsync();
             if (c.M365.CertificateExpires is { } exp && exp - DateTimeOffset.UtcNow < TimeSpan.FromDays(30))
                 Logs.Warn($"Das Zertifikat der App läuft am {exp.ToLocalTime():d} ab. In der Oberfläche unter Microsoft 365 erneuern.");
             try { await Task.Delay(TimeSpan.FromHours(1), ct); } catch (OperationCanceledException) { break; }

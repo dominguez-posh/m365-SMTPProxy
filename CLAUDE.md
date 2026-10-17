@@ -42,6 +42,10 @@ Image `ghcr.io/dominguez-posh/m365-smtpproxy` öffentlich. Vorbild für Plattfor
   Ereignisse, Befehle, `/api/diagnostics` (Serverausgaben). Beschreibung: `docs/API.md`. Für Fehlersuche den Nutzer
   nach einem Token fragen statt zu raten.
 - **Web-Oberfläche** im Design von hrdnr (`web/public/app.css`, Tokens, dunkle Seitenleiste, react-icons).
+- **Absender ohne Postfach** gehen über ein freigegebenes Postfach (`senders.sharedMailbox`) mit der Adresse als Alias.
+  Einrichtung per GUI mit Exchange-Admin (`ExchangeSetup`), Alias-Anlage zur Laufzeit app-only über die
+  REST-Schnittstelle des EXO-Moduls (`ExchangeAdmin`, Exchange.ManageAsApp + Rollengruppe nur für dieses Postfach).
+  Postfach-Felder hält der Server wie `m365` vom Proxy fest; nur `autoCreateAliases` ist im Web änderbar.
 - **Exchange-Einschränkung** läuft unsichtbar mit `Connect-ExchangeOnline -DisableWAM` (WAM scheitert in Prozessen mit
   Adminrechten mit 0x80070520); Fortschritt erscheint im Protokoll der GUI.
 - Updates werden nur angeboten, wenn das Paket neuer ist (`isNewer` in `shared/types.ts`).

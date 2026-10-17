@@ -34,6 +34,11 @@ export interface ProxyConfig {
     exchangeScopeEnabled: boolean;
     exchangeScopeGroup: string;
     exchangeScopeSyncedAt?: string | null;
+    /** shared mailbox for senders without an own mailbox (their addresses become its aliases); empty = not set up */
+    sharedMailbox?: string;
+    sharedMailboxAliases?: string[];
+    autoCreateAliases?: boolean;
+    sharedMailboxSetupAt?: string | null;
   };
   m365: {
     tenantId: string;
