@@ -18,7 +18,7 @@ writeFileSync(join(pkgDir, "install.ps1"), "param([string]$ServerUrl = '__SERVER
 
 const server = spawn(process.execPath, ["server/dist/server.mjs"], {
   env: { ...process.env, SMTPPROXY_PORT: String(port), SMTPPROXY_DATA: join(data, "data"), SMTPPROXY_PACKAGE: pkgDir, SMTPPROXY_STATIC: "dist" },
-  stdio: ["ignore", "pipe", "inherit"],
+  stdio: ["ignore", "inherit", "inherit"],
 });
 let failed = 0;
 const ok = (cond, text) => {
@@ -135,8 +135,15 @@ try {
   console.error(e);
   failed++;
 } finally {
+  // on Linux SIGTERM lets the server flush its stores: wait for the exit before removing the data folder
+  const exited = new Promise((r) => server.once("exit", r));
   server.kill();
-  rmSync(data, { recursive: true, force: true });
+  await Promise.race([exited, new Promise((r) => setTimeout(r, 5000))]);
+  try {
+    rmSync(data, { recursive: true, force: true });
+  } catch (e) {
+    console.warn(`Hinweis: Testordner nicht entfernt: ${e.message}`);
+  }
 }
 console.log(failed ? `${failed} Fehler` : "Alle Servertests bestanden.");
 process.exit(failed ? 1 : 0);
