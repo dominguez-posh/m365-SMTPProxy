@@ -78,17 +78,20 @@ public partial class MainWindow : Window
         _addresses.Clear();
         foreach (var a in c.Senders.AllowedAddresses) _addresses.Add(a);
         FillDomains(NewAddressDomain, c.M365.Domains, null);
-        var mbx = c.Senders.SharedMailbox;
+        var req = c.Senders.RequestedSharedMailbox;
+        var mbx = c.Senders.SharedMailbox is { Length: > 0 } set ? set : req ?? "";
         var at = mbx.IndexOf('@');
-        SharedMailboxCheck.IsChecked = !c.M365.IsConnected || at > 0;
+        SharedMailboxCheck.IsChecked = c.Senders.SharedMailbox.Length > 0 || req != "";
         MailboxLocal.Text = at > 0 ? mbx[..at] : ExchangeSetup.DefaultMailboxName;
         FillDomains(MailboxDomain, c.M365.Domains, at > 0 ? mbx[(at + 1)..] : null);
         AutoAliasCheck.IsChecked = c.Senders.AutoCreateAliases;
+        // a set up mailbox stays; its name cannot be changed here
+        SharedMailboxCheck.IsEnabled = MailboxLocal.IsEnabled = MailboxDomain.IsEnabled = c.Senders.SharedMailbox.Length == 0;
         AllowedDomains.Text = Lines(c.Senders.AllowedDomains);
         ServerUrl.Text = c.Management.ServerUrl;
         AcceptConfig.IsChecked = c.Management.AcceptRemoteConfig;
         AcceptUpdates.IsChecked = c.Management.AcceptUpdates;
-        ExchangeScopeCheck.IsChecked = !c.M365.IsConnected || c.Senders.ExchangeScopeEnabled;
+        ExchangeScopeCheck.IsChecked = c.Senders.ExchangeScopeEnabled || (c.Senders.ExchangeScopeRequested ?? true);
         _users.Clear();
         foreach (var u in c.Users)
             _users.Add(new UserRow { Name = u.Name, Enabled = u.Enabled, Description = u.Description, Senders = string.Join(", ", u.AllowedSenders), PasswordHash = u.PasswordHash });
@@ -139,6 +142,8 @@ public partial class MainWindow : Window
             c.Smtp.AllowAuthWithoutTls = AllowAuth.IsChecked == true;
             c.Senders.AllowedAddresses = _addresses.Select(a => a.ToLowerInvariant()).Distinct().ToList();
             c.Senders.AutoCreateAliases = AutoAliasCheck.IsChecked == true;
+            c.Senders.RequestedSharedMailbox = RequestedMailbox();
+            c.Senders.ExchangeScopeRequested = ExchangeScopeCheck.IsChecked == true;
             c.Senders.AllowedDomains = FromLines(AllowedDomains.Text).Select(d => d.TrimStart('@').ToLowerInvariant()).ToList();
             c.Management.ServerUrl = ServerUrl.Text.Trim().TrimEnd('/');
             c.Management.AcceptRemoteConfig = AcceptConfig.IsChecked == true;
@@ -236,6 +241,8 @@ public partial class MainWindow : Window
                    || AnonymousNetworks.Text != Lines(c.Smtp.AnonymousNetworks) || AllowedNetworks.Text != Lines(c.Smtp.AllowedNetworks)
                    || !_addresses.SequenceEqual(c.Senders.AllowedAddresses) || AllowedDomains.Text != Lines(c.Senders.AllowedDomains)
                    || (AutoAliasCheck.IsChecked == true) != c.Senders.AutoCreateAliases
+                   || RequestedMailbox() != (c.Senders.SharedMailbox is { Length: > 0 } m ? m : c.Senders.RequestedSharedMailbox ?? RequestedMailbox())
+                   || (ExchangeScopeCheck.IsChecked == true) != (c.Senders.ExchangeScopeEnabled || (c.Senders.ExchangeScopeRequested ?? true))
                    || ServerUrl.Text.Trim() != c.Management.ServerUrl || _users.Count != c.Users.Count;
         }
         catch { return true; }
@@ -318,7 +325,7 @@ public partial class MainWindow : Window
     {
         var old = _config.M365;
         if (old.IsConnected && MessageBox.Show(this,
-                "Es besteht bereits eine Verbindung. Neu verbinden legt eine neue App-Registrierung mit neuem Zertifikat an; die bisherige wird anschließend gelöscht. Fortfahren?",
+                "Neu verbinden prüft die bestehende App-Registrierung und bringt sie auf den aktuellen Stand (Berechtigungen, Exchange). Die App bleibt dieselbe; das Zertifikat wird nur ersetzt, wenn es fehlt oder bald abläuft. Fortfahren?",
                 Title, MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
 
         var scope = ExchangeScopeCheck.IsChecked == true;
@@ -326,27 +333,24 @@ public partial class MainWindow : Window
         var admin = await BrowserLogin.SignInAsync(AppProvisioner.AdminScopes, url => LogM365("Falls sich kein Browser öffnet: " + url), CancellationToken.None);
         LogM365($"Angemeldet als {admin.User}.");
 
-        var conn = await AppProvisioner.ProvisionAsync(admin, scope, LogM365, CancellationToken.None);
+        var conn = await AppProvisioner.ConnectAsync(admin, old, scope, LogM365, CancellationToken.None);
         var c = ConfigStore.Load();
         c.M365 = conn;
         c.Senders.ExchangeScopeEnabled = scope;
         if (scope && c.Senders.ExchangeScopeGroup.Length == 0) c.Senders.ExchangeScopeGroup = ExchangeSetup.GroupAlias(Environment.MachineName);
         _config = ConfigStore.Save(c, $"Oberfläche ({admin.User})");
         LoadConfig();
-        LogM365($"App {conn.ClientId} angelegt, Domänen: {string.Join(", ", conn.Domains)}");
-
-        if (old.IsConnected && old.ClientId != conn.ClientId)
-        {
-            LogM365("Bisherige App-Registrierung wird gelöscht …");
-            try { await AppProvisioner.RemoveAsync(admin, old, CancellationToken.None); }
-            catch (Exception ex) { LogM365($"Bisherige App konnte nicht gelöscht werden: {ex.Message}"); }
-        }
+        LogM365($"App {conn.ClientId}, Domänen: {string.Join(", ", conn.Domains)}");
 
         if (scope || SharedMailboxCheck.IsChecked == true) await ApplyExchangeAsync(admin);
         LogM365("Fertig. Ab jetzt arbeitet der Proxy nur mit dem Zertifikat der App; eine weitere Anmeldung ist nicht nötig.");
     });
 
     async void Exchange_Click(object sender, RoutedEventArgs e) => await RunBusyAsync(() => ApplyExchangeAsync(null));
+
+    /// <summary>Shared mailbox as chosen in the controls ("" = not wanted), unvalidated (saved with the settings).</summary>
+    string RequestedMailbox() =>
+        SharedMailboxCheck.IsChecked != true ? "" : $"{MailboxLocal.Text.Trim().ToLowerInvariant()}@{MailboxDomain.SelectedItem as string}";
 
     /// <summary>Shared mailbox from the controls; empty if not wanted.</summary>
     string WantedMailbox()

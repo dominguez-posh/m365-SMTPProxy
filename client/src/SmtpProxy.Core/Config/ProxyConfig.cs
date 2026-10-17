@@ -71,6 +71,10 @@ public sealed class SenderPolicy
     /// <summary>The service adds a missing sender address as alias of the shared mailbox (Exchange.ManageAsApp).</summary>
     public bool AutoCreateAliases { get; set; } = true;
     public DateTimeOffset? SharedMailboxSetupAt { get; set; }
+    /// <summary>Choice in the GUI before the Exchange setup: null = default (wanted), "" = not wanted, otherwise the address.</summary>
+    public string? RequestedSharedMailbox { get; set; }
+    /// <summary>Choice in the GUI for the Exchange restriction; null = default (on).</summary>
+    public bool? ExchangeScopeRequested { get; set; }
 }
 
 public sealed class M365Connection

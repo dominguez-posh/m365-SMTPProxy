@@ -39,6 +39,8 @@ public sealed class M365Session(Func<ProxyConfig> config)
     public M365.ExchangeAdmin? Exchange()
     {
         var c = config().M365;
+        // apps of older versions lack Exchange.ManageAsApp and the Exchange role group: they would only fail
+        if (c.PermissionsVersion < M365.AppProvisioner.PermissionsVersion) return null;
         if (Tokens() is not { } graph || Organization(c.Domains) is not { } org) return null;
         lock (_gate)
         {

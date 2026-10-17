@@ -143,15 +143,15 @@ public static class ExchangeSetup
             (result.Members, result.NotFound) = await Retry(() => exo.SyncGroupAsync(result.Group, result.Mailbox ?? c.Senders.SharedMailbox, c.Senders.AllowedAddresses, ct), ct);
 
             progress("Verwaltungsbereich und Rolle Application Mail.Send …");
-            await EnsureScopeAsync(exo, ScopeName(appId), $"MemberOfGroup -eq '{group["DistinguishedName"]}'", ct);
+            var sendScope = await EnsureScopeAsync(exo, ScopeName(appId), $"MemberOfGroup -eq '{group["DistinguishedName"]}'", progress, ct);
             var assigned = await TryListAsync(exo, "Get-ManagementRoleAssignment", new JsonObject { ["RoleAssignee"] = appId, ["Role"] = "Application Mail.Send" }, ct);
             if (assigned.Count == 0)
-                await Retry(() => exo.InvokeAsync("New-ManagementRoleAssignment", new JsonObject
+                await IgnoreExisting(() => Retry(() => exo.InvokeAsync("New-ManagementRoleAssignment", new JsonObject
                 {
                     ["App"] = appId,
                     ["Role"] = "Application Mail.Send",
-                    ["CustomResourceScope"] = ScopeName(appId),
-                }, ct), ct);
+                    ["CustomResourceScope"] = sendScope,
+                }, ct), ct));
         }
 
         // what the service may change itself: only the shared mailbox and the sender group
@@ -159,14 +159,14 @@ public static class ExchangeSetup
         if (targets.Count > 0)
         {
             progress("Rechte der App für Aliasse und Gruppenmitglieder (nur dieses Postfach und diese Gruppe) …");
-            await EnsureScopeAsync(exo, WriteScopeName(appId), string.Join(" -or ", targets.Select(t => $"(PrimarySmtpAddress -eq '{t}')")), ct);
+            var writeScope = await EnsureScopeAsync(exo, WriteScopeName(appId), string.Join(" -or ", targets.Select(t => $"(PrimarySmtpAddress -eq '{t}')")), progress, ct);
             var rg = RoleGroupName(appId);
-            if (await exo.GetAsync("Get-RoleGroup", rg, ct) is null)
-                await exo.InvokeAsync("New-RoleGroup", new JsonObject
+            if (await FindByNameAsync(exo, "Get-RoleGroup", rg, ct) is null)
+                await IgnoreExisting(() => exo.InvokeAsync("New-RoleGroup", new JsonObject
                 {
                     ["Name"] = rg,
                     ["Description"] = "M365 SMTP Proxy: Aliasse des freigegebenen Postfachs und Mitglieder der Absendergruppe pflegen",
-                }, ct);
+                }, ct));
             var roles = new List<string>();
             if (result.Mailbox is not null) roles.Add("Mail Recipients");
             if (result.Group is not null) roles.AddRange(["Distribution Groups", "Security Group Creation and Membership"]);
@@ -179,9 +179,10 @@ public static class ExchangeSetup
                     {
                         ["SecurityGroup"] = rg,
                         ["Role"] = role,
-                        ["CustomRecipientWriteScope"] = WriteScopeName(appId),
+                        ["CustomRecipientWriteScope"] = writeScope,
                     }, ct), ct);
                 }
+                catch (GraphException ex) when (IsExisting(ex)) { }
                 catch (GraphException ex)
                 {
                     progress($"Rolle {role} konnte nicht zugewiesen werden: {ex.Message}");
@@ -212,12 +213,46 @@ public static class ExchangeSetup
         catch (GraphException ex) when (ExchangeAdmin.IsNotFound(ex)) { return []; }
     }
 
-    static async Task EnsureScopeAsync(ExchangeAdmin exo, string name, string filter, CancellationToken ct)
+    /// <summary>
+    /// Management scope with this filter; returns the name to use. Looked up in the full list (Get-* with a name as
+    /// identity does not find every object over REST). Exchange refuses a second scope with the same filter, so an
+    /// existing one (e.g. from an earlier version) is used instead.
+    /// </summary>
+    static async Task<string> EnsureScopeAsync(ExchangeAdmin exo, string name, string filter, Action<string> progress, CancellationToken ct)
     {
-        if (await exo.GetAsync("Get-ManagementScope", name, ct) is null)
+        if (await FindByNameAsync(exo, "Get-ManagementScope", name, ct) is { } existing)
+        {
+            if (!string.Equals(existing["RecipientFilter"]?.ToString(), filter, StringComparison.OrdinalIgnoreCase))
+                await exo.InvokeAsync("Set-ManagementScope", new JsonObject { ["Identity"] = Id(existing, name), ["RecipientRestrictionFilter"] = filter }, ct);
+            return name;
+        }
+        try
+        {
             await exo.InvokeAsync("New-ManagementScope", new JsonObject { ["Name"] = name, ["RecipientRestrictionFilter"] = filter }, ct);
-        else
-            await exo.InvokeAsync("Set-ManagementScope", new JsonObject { ["Identity"] = name, ["RecipientRestrictionFilter"] = filter }, ct);
+            return name;
+        }
+        catch (GraphException ex) when (System.Text.RegularExpressions.Regex.Match(ex.Message, @"The (.+?) management scope has the same") is { Success: true } m)
+        {
+            progress($"Vorhandener Verwaltungsbereich „{m.Groups[1].Value}“ wird verwendet.");
+            return m.Groups[1].Value;
+        }
+    }
+
+    static async Task<JsonNode?> FindByNameAsync(ExchangeAdmin exo, string cmdlet, string name, CancellationToken ct) =>
+        (await TryListAsync(exo, cmdlet, new JsonObject(), ct))
+        .FirstOrDefault(o => string.Equals(o?["Name"]?.ToString(), name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Most stable identity of a listed object (Guid), otherwise its name.</summary>
+    static string Id(JsonNode o, string fallback) => o["Guid"]?.ToString() is { Length: > 0 } g ? g : o["Identity"]?.ToString() ?? fallback;
+
+    static bool IsExisting(GraphException ex) =>
+        ex.Message.Contains("already exist", StringComparison.OrdinalIgnoreCase) || ex.Message.Contains("already a member", StringComparison.OrdinalIgnoreCase)
+        || ex.Message.Contains("is already assigned", StringComparison.OrdinalIgnoreCase);
+
+    static async Task IgnoreExisting(Func<Task> action)
+    {
+        try { await action(); }
+        catch (GraphException ex) when (IsExisting(ex)) { }
     }
 
     static GraphException NotYet(string what) => new(System.Net.HttpStatusCode.NotFound, "exchange", $"{what} ist in Exchange noch nicht sichtbar");
@@ -228,7 +263,7 @@ public static class ExchangeSetup
         for (var i = 1; ; i++)
         {
             try { return await action(); }
-            catch (GraphException) when (i < 10) { await Task.Delay(TimeSpan.FromSeconds(6), ct); }
+            catch (GraphException ex) when (i < 10 && !IsExisting(ex)) { await Task.Delay(TimeSpan.FromSeconds(6), ct); }
         }
     }
 

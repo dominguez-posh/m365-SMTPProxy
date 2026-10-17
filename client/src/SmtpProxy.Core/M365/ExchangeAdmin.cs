@@ -51,7 +51,8 @@ public sealed class ExchangeAdmin(string tenantId, string anchorMailbox, Func<Ca
             }
             catch (JsonException) { }
             // messages look like "|Microsoft.Exchange.Management....|Text": keep the text
-            if (message.LastIndexOf('|') is var bar and >= 0 && bar < message.Length - 1) message = message[(bar + 1)..];
+            if (message.LastIndexOf('|') is var bar and >= 0 && message[(bar + 1)..].Trim().Length > 0) message = message[(bar + 1)..];
+            if (message.Trim().Length == 0) message = $"HTTP {(int)res.StatusCode} {res.ReasonPhrase}";
             throw new GraphException(res.StatusCode, "exchange", $"Exchange {cmdlet}: {message.Trim()}", res.Headers.RetryAfter?.Delta);
         }
     }

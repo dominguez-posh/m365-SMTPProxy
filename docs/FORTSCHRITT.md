@@ -1,5 +1,14 @@
 # Fortschritt
 
+## Stand 18.10.2026 (Client 0.2.1)
+
+- „Neu verbinden“ verwendet die bestehende App-Registrierung weiter (aus der Konfiguration oder per Name gefunden)
+  und passt nur Rechte und Exchange an; neues Zertifikat nur, wenn das lokale fehlt oder bald abläuft.
+- Exchange-Einrichtung: vorhandene Verwaltungsbereiche/Rollengruppen werden über die volle Liste gefunden (Get-* mit
+  Namen findet über REST nicht alles); ein Bereich mit gleichem Filter wird übernommen.
+- GUI speichert die Wahl „Freigegebenes Postfach“ und „Einschränken“ (vorher setzte Speichern sie zurück).
+- Dienst ruft Exchange erst auf, wenn die App die Rechte von Version 2 hat.
+
 ## Stand 18.10.2026 (Client 0.2.0)
 
 - **Eine Anmeldung, danach kein Benutzer mehr:** Beim Verbinden meldet sich der Admin einmal an (Graph CLI Client);
