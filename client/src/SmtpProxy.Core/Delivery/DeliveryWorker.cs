@@ -70,8 +70,11 @@ public sealed class DeliveryWorker(Func<ProxyConfig> config, MailQueue queue, M3
         }
         catch (Exception ex)
         {
-            var transient = ex is GraphException { IsTransient: true } or IOException or HttpRequestException;
-            if (ex is GraphException { Status: System.Net.HttpStatusCode.Unauthorized }) m365.InvalidateToken();
+            // 403: the token may predate a new permission (consent takes effect in a new token, in Exchange after
+            // a few minutes): fresh token and a few more attempts before giving up
+            var denied = ex is GraphException { Status: System.Net.HttpStatusCode.Forbidden };
+            var transient = ex is GraphException { IsTransient: true } or IOException or HttpRequestException || (denied && item.Attempts < 4);
+            if (ex is GraphException { Status: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden }) m365.InvalidateToken();
             item.LastError = ex.Message;
             LastError = $"{item.From}: {ex.Message}";
             var expired = DateTimeOffset.UtcNow - item.ReceivedAt > TimeSpan.FromHours(Math.Max(1, config().Delivery.RetryHours));
