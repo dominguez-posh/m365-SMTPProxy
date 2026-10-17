@@ -1,0 +1,280 @@
+<Window x:Class="SmtpProxy.Gui.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="M365 SMTP Proxy" Height="760" Width="1100" MinHeight="560" MinWidth="820"
+        WindowStartupLocation="CenterScreen">
+    <DockPanel>
+        <!-- footer: save / discard -->
+        <Border DockPanel.Dock="Bottom" BorderBrush="#33808080" BorderThickness="0,1,0,0" Padding="16,10">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <Button x:Name="DiscardButton" Content="Verwerfen" Click="Discard_Click" />
+                    <Button x:Name="SaveButton" Content="Speichern" Click="Save_Click" Margin="0" />
+                </StackPanel>
+                <TextBlock x:Name="FooterText" VerticalAlignment="Center" Style="{StaticResource Hint}" Margin="0" />
+            </DockPanel>
+        </Border>
+
+        <TabControl x:Name="Tabs" TabStripPlacement="Left" Padding="20,16" BorderThickness="0">
+            <!-- ======================================================= overview -->
+            <TabItem Header="Übersicht">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="Übersicht" Style="{StaticResource H1}" />
+                        <WrapPanel>
+                            <Border Style="{StaticResource Card}" Width="300">
+                                <StackPanel>
+                                    <TextBlock Text="Dienst" Style="{StaticResource Label}" Margin="0,0,0,6" />
+                                    <TextBlock x:Name="SvcState" FontSize="16" />
+                                    <TextBlock x:Name="SvcDetail" Style="{StaticResource Hint}" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                        <Button Content="Starten" Click="StartService_Click" />
+                                        <Button Content="Neu starten" Click="RestartService_Click" />
+                                        <Button Content="Stoppen" Click="StopService_Click" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource Card}" Width="300">
+                                <StackPanel>
+                                    <TextBlock Text="SMTP" Style="{StaticResource Label}" Margin="0,0,0,6" />
+                                    <TextBlock x:Name="SmtpState" FontSize="16" />
+                                    <TextBlock x:Name="SmtpDetail" Style="{StaticResource Hint}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource Card}" Width="300">
+                                <StackPanel>
+                                    <TextBlock Text="Microsoft 365" Style="{StaticResource Label}" Margin="0,0,0,6" />
+                                    <TextBlock x:Name="M365State" FontSize="16" />
+                                    <TextBlock x:Name="M365Detail" Style="{StaticResource Hint}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource Card}" Width="300">
+                                <StackPanel>
+                                    <TextBlock Text="Zustellung" Style="{StaticResource Label}" Margin="0,0,0,6" />
+                                    <TextBlock x:Name="QueueState" FontSize="16" />
+                                    <TextBlock x:Name="QueueDetail" Style="{StaticResource Hint}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Style="{StaticResource Card}" Width="300">
+                                <StackPanel>
+                                    <TextBlock Text="Verwaltungsserver" Style="{StaticResource Label}" Margin="0,0,0,6" />
+                                    <TextBlock x:Name="MgmtState" FontSize="16" />
+                                    <TextBlock x:Name="MgmtDetail" Style="{StaticResource Hint}" />
+                                </StackPanel>
+                            </Border>
+                        </WrapPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ======================================================= Microsoft 365 -->
+            <TabItem Header="Microsoft 365">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+                        <TextBlock Text="Microsoft 365" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Der Proxy sendet über Microsoft Graph im Namen des Absenderpostfachs. Bei der Verbindung meldet sich ein Administrator an (Globaler Administrator oder Rolle mit Administratorzustimmung). Das Tool legt eine eigene App-Registrierung mit Zertifikat an; der Schlüssel bleibt nicht exportierbar auf diesem Computer." />
+                        <Border Style="{StaticResource Card}" Margin="0,4,0,12">
+                            <StackPanel>
+                                <TextBlock x:Name="M365Info" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                        <CheckBox x:Name="ExchangeScopeCheck" Content="Absender zusätzlich in Exchange Online einschränken (empfohlen)" IsChecked="True" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Einschränkung darf die App technisch als jedes Postfach des Tenants senden (der Proxy prüft die Absender trotzdem). Mit Einschränkung erhält die App das Senderecht nur für die Postfächer der Liste „Erlaubte Adressen“ (Exchange-Gruppe und RBAC for Applications). Dafür öffnet sich ein PowerShell-Fenster mit Anmeldung als Exchange-Administrator." />
+                        <WrapPanel Margin="0,4,0,0">
+                            <Button x:Name="ConnectButton" Content="Mit Microsoft 365 verbinden" Click="Connect_Click" Margin="0,0,8,8" />
+                            <Button x:Name="ExchangeButton" Content="Absender in Exchange abgleichen" Click="Exchange_Click" Margin="0,0,8,8" />
+                            <Button x:Name="DomainsButton" Content="Domänen aktualisieren" Click="Domains_Click" Margin="0,0,8,8" />
+                            <Button x:Name="TestButton" Content="Testnachricht senden" Click="TestMail_Click" Margin="0,0,8,8" />
+                            <Button x:Name="DisconnectButton" Content="Verbindung trennen" Click="Disconnect_Click" Margin="0,0,8,8" />
+                        </WrapPanel>
+                        <TextBox x:Name="M365Log" IsReadOnly="True" Style="{StaticResource Multi}" Height="180" Margin="0,8,0,0" FontFamily="Consolas" TextWrapping="Wrap" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ======================================================= SMTP -->
+            <TabItem Header="SMTP">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+                        <TextBlock Text="SMTP-Empfang" Style="{StaticResource H1}" />
+                        <CheckBox x:Name="SmtpEnabled" Content="SMTP-Empfang aktiv" />
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="140" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="IP-Adresse" Style="{StaticResource Label}" />
+                                <TextBox x:Name="ListenAddress" />
+                                <TextBlock Style="{StaticResource Hint}" Text="0.0.0.0 = alle IPv4-Adressen, :: = alle Adressen (IPv4 und IPv6)." />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="Port" Style="{StaticResource Label}" />
+                                <TextBox x:Name="Port" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="Hostname in der Begrüßung" Style="{StaticResource Label}" />
+                        <TextBox x:Name="HostName" />
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="Maximale Nachrichtengröße (MB)" Style="{StaticResource Label}" />
+                                <TextBox x:Name="MaxSize" />
+                                <TextBlock Style="{StaticResource Hint}" Text="Microsoft Graph erlaubt bis 150 MB; Postfächer haben oft 35 MB als Grenze." />
+                            </StackPanel>
+                            <StackPanel Grid.Column="2">
+                                <TextBlock Text="Maximale Empfänger je Nachricht" Style="{StaticResource Label}" />
+                                <TextBox x:Name="MaxRecipients" />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="Netze ohne Anmeldung (anonym)" Style="{StaticResource Label}" />
+                        <TextBox x:Name="AnonymousNetworks" Style="{StaticResource Multi}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Eine Adresse oder ein Netz je Zeile (z. B. 192.168.10.0/24 für Drucker). Alle anderen müssen sich mit einem SMTP-Benutzer anmelden." />
+                        <TextBlock Text="Zugelassene Netze" Style="{StaticResource Label}" />
+                        <TextBox x:Name="AllowedNetworks" Style="{StaticResource Multi}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Leer = jede Adresse darf sich verbinden (anonym senden nur aus den Netzen oben). Sonst nur diese Netze und die anonymen Netze." />
+                        <CheckBox x:Name="AllowAuth" Content="Anmeldung (AUTH) ohne TLS erlauben" Margin="0,8,0,0" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Noch ohne TLS: Benutzername und Passwort gehen lesbar über das Netz. Nur in vertrauenswürdigen Netzen nutzen. TLS folgt in einer späteren Version." />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ======================================================= senders -->
+            <TabItem Header="Absender">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+                        <TextBlock Text="Erlaubte Absender" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Der Proxy nimmt nur Nachrichten an, deren Absender (MAIL FROM) zu einer Domäne des Tenants gehört und hier erlaubt ist. Sind beide Listen leer, ist jede Adresse der Tenant-Domänen erlaubt." />
+                        <TextBlock Text="Erlaubte Adressen" Style="{StaticResource Label}" />
+                        <TextBox x:Name="AllowedAddresses" Style="{StaticResource Multi}" Height="140" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Eine Adresse je Zeile, z. B. scanner@contoso.com. Mit Exchange-Einschränkung sind dies die Postfächer, als die die App senden darf (Postfach oder freigegebenes Postfach)." />
+                        <TextBlock Text="Erlaubte Domänen" Style="{StaticResource Label}" />
+                        <TextBox x:Name="AllowedDomains" Style="{StaticResource Multi}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Jede Adresse dieser Domänen ist erlaubt. Bei Exchange-Einschränkung gilt das nur, wenn das Postfach auch in der Exchange-Gruppe ist." />
+                        <TextBlock x:Name="TenantDomains" Style="{StaticResource Hint}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ======================================================= users -->
+            <TabItem Header="SMTP-Benutzer">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="SMTP-Benutzer" Style="{StaticResource H1}" />
+                    <TextBlock DockPanel.Dock="Top" Style="{StaticResource Hint}" Text="Geräte und Anwendungen außerhalb der anonymen Netze melden sich mit diesen Benutzern an (AUTH PLAIN/LOGIN). Erlaubte Absender je Benutzer schränken weiter ein (leer = alle erlaubten Absender)." />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Benutzer anlegen" Click="AddUser_Click" />
+                        <Button Content="Neues Passwort" Click="ResetPassword_Click" />
+                        <Button Content="Löschen" Click="DeleteUser_Click" />
+                    </StackPanel>
+                    <DataGrid x:Name="UsersGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Benutzername" Binding="{Binding Name}" IsReadOnly="True" Width="200" />
+                            <DataGridCheckBoxColumn Header="Aktiv" Binding="{Binding Enabled, UpdateSourceTrigger=PropertyChanged}" Width="60" />
+                            <DataGridTextColumn Header="Beschreibung" Binding="{Binding Description}" Width="*" />
+                            <DataGridTextColumn Header="Erlaubte Absender (durch Komma getrennt)" Binding="{Binding Senders}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ======================================================= queue -->
+            <TabItem Header="Warteschlange">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="Aktualisieren" Click="RefreshQueue_Click" Margin="0" VerticalAlignment="Top" />
+                        <StackPanel>
+                            <TextBlock Text="Warteschlange" Style="{StaticResource H1}" />
+                            <TextBlock Style="{StaticResource Hint}" Text="Angenommene Nachrichten, die noch zugestellt werden. Vorübergehende Fehler werden wiederholt." />
+                        </StackPanel>
+                    </DockPanel>
+                    <DataGrid x:Name="QueueGrid" Grid.Row="1" IsReadOnly="True" AutoGenerateColumns="False" HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Empfangen" Binding="{Binding ReceivedAt, StringFormat=g}" Width="130" />
+                            <DataGridTextColumn Header="Absender" Binding="{Binding From}" Width="*" />
+                            <DataGridTextColumn Header="Empfänger" Binding="{Binding RecipientsText}" Width="*" />
+                            <DataGridTextColumn Header="Versuche" Binding="{Binding Attempts}" Width="70" />
+                            <DataGridTextColumn Header="Nächster Versuch" Binding="{Binding NextAttemptAt, StringFormat=g}" Width="130" />
+                            <DataGridTextColumn Header="Fehler" Binding="{Binding LastError}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <DockPanel Grid.Row="2" Margin="0,16,0,8">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Erneut senden" Click="RetryFailed_Click" />
+                            <Button Content="Löschen" Click="DeleteFailed_Click" Margin="0" />
+                        </StackPanel>
+                        <TextBlock Text="Fehlgeschlagen" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <DataGrid x:Name="FailedGrid" Grid.Row="3" IsReadOnly="True" AutoGenerateColumns="False" HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Empfangen" Binding="{Binding ReceivedAt, StringFormat=g}" Width="130" />
+                            <DataGridTextColumn Header="Absender" Binding="{Binding From}" Width="*" />
+                            <DataGridTextColumn Header="Empfänger" Binding="{Binding RecipientsText}" Width="*" />
+                            <DataGridTextColumn Header="Versuche" Binding="{Binding Attempts}" Width="70" />
+                            <DataGridTextColumn Header="Fehler" Binding="{Binding LastError}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
+
+            <!-- ======================================================= log -->
+            <TabItem Header="Protokoll">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="Protokoll" Style="{StaticResource H1}" />
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <DatePicker x:Name="LogDate" SelectedDateChanged="LogDate_Changed" Width="160" Margin="0,0,8,0" />
+                        <ComboBox x:Name="LogKind" Width="180" SelectionChanged="LogKind_Changed" Margin="0,0,8,0">
+                            <ComboBoxItem Content="Nachrichten" IsSelected="True" />
+                            <ComboBoxItem Content="Dienst" />
+                        </ComboBox>
+                        <TextBox x:Name="LogFilter" Width="240" TextChanged="LogFilter_Changed" Margin="0,0,8,0" ToolTip="Filter (Adresse, IP, Text)" />
+                        <Button Content="Aktualisieren" Click="RefreshLog_Click" />
+                    </StackPanel>
+                    <DataGrid x:Name="LogGrid" IsReadOnly="True" AutoGenerateColumns="False" HeadersVisibility="Column">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Zeit" Binding="{Binding Time}" Width="80" />
+                            <DataGridTextColumn Header="Ereignis" Binding="{Binding Event}" Width="100" />
+                            <DataGridTextColumn Header="Client" Binding="{Binding Client}" Width="130" />
+                            <DataGridTextColumn Header="Absender" Binding="{Binding From}" Width="*" />
+                            <DataGridTextColumn Header="Empfänger" Binding="{Binding To}" Width="*" />
+                            <DataGridTextColumn Header="Details" Binding="{Binding Detail}" Width="2*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- ======================================================= management -->
+            <TabItem Header="Verwaltung">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel MaxWidth="760" HorizontalAlignment="Left">
+                        <TextBlock Text="Verwaltungsserver (optional)" Style="{StaticResource H1}" />
+                        <TextBlock Style="{StaticResource Hint}" Text="Ohne Server läuft der Proxy vollständig eigenständig. Mit Server werden Status, Einstellungen und Protokolle übertragen; Einstellungen und Updates lassen sich dann aus der Ferne verwalten. Die erste Verbindung muss im Server freigegeben werden." />
+                        <TextBlock Text="Adresse des Servers (HTTPS)" Style="{StaticResource Label}" />
+                        <TextBox x:Name="ServerUrl" />
+                        <CheckBox x:Name="AcceptConfig" Content="Einstellungen vom Server übernehmen" Margin="0,10,0,0" />
+                        <CheckBox x:Name="AcceptUpdates" Content="Updates vom Server installieren" Margin="0,6,0,0" />
+                        <Border Style="{StaticResource Card}" Margin="0,16,0,12">
+                            <TextBlock x:Name="MgmtInfo" TextWrapping="Wrap" />
+                        </Border>
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Vom Server abmelden" Click="LeaveServer_Click" />
+                        </StackPanel>
+                        <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0" Text="Abmelden entfernt den Proxy auf dem Server und löscht den Schlüssel dieses Computers. Eine neue Verbindung muss erneut freigegeben werden." />
+                        <TextBlock Text="Info" Style="{StaticResource Label}" Margin="0,24,0,4" />
+                        <TextBlock x:Name="AboutText" Style="{StaticResource Hint}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

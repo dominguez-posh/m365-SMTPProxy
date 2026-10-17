@@ -1,0 +1,10 @@
+node_modules
+dist
+server/dist
+client
+data
+deployment
+.git
+.github
+docs
+*.md

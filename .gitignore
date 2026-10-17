@@ -1,0 +1,23 @@
+node_modules/
+dist/
+server/dist/
+*.log
+.DS_Store
+
+# .NET
+client/**/bin/
+client/**/obj/
+client/**/TestResults/
+client/publish/
+*.user
+.vs/
+
+# Terraform
+deployment/**/.terraform/
+deployment/**/*.tfstate
+deployment/**/*.tfstate.*
+deployment/**/terraform.tfvars
+deployment/**/*.auto.tfvars
+deployment/**/*.tfplan
+client-package/
+data/

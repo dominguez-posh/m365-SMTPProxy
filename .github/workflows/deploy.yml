@@ -1,0 +1,135 @@
+# Every push to main: test and build the client (Windows), publish a GitHub release for a new client version,
+# build the server image with the client package and roll it out to Azure. One environment only (prod).
+name: Build und Ausrollen
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  client:
+    name: Client (Tests und Paket)
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.pkg.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Tests
+        run: dotnet test client --nologo
+      - name: Paket
+        id: pkg
+        shell: pwsh
+        run: |
+          ./tools/build-client.ps1
+          $v = (Get-Content client-package/version.json | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v5
+        with:
+          name: client-package
+          path: client-package/
+          retention-days: 7
+
+  release:
+    name: GitHub-Release (neue Client-Version)
+    needs: client
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: client-package
+          path: client-package
+      - name: Release anlegen, falls die Version neu ist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.client.outputs.version }}
+        run: |
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION gibt es schon."
+          else
+            gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "M365 SMTP Proxy $VERSION" \
+              --notes "Eigenständige Installation (PowerShell als Administrator): \`irm https://github.com/$GITHUB_REPOSITORY/releases/latest/download/install.ps1 | iex\`" \
+              client-package/M365SmtpProxy.zip client-package/M365SmtpProxy.zip.sha256 client-package/install.ps1
+          fi
+
+  server:
+    name: Server (Tests und Image)
+    needs: client
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-fund --no-audit
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Servertest
+        run: node tools/test-server.mjs
+      - uses: actions/download-artifact@v5
+        with:
+          name: client-package
+          path: client-package
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/m365-smtpproxy:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/m365-smtpproxy:latest
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+  deploy:
+    name: Azure (prod)
+    needs: server
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: prod
+      url: ${{ steps.out.outputs.url }}
+    defaults:
+      run:
+        working-directory: deployment
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.1
+          terraform_wrapper: false
+      - name: terraform init
+        run: terraform init -input=false -backend-config=backend.hcl
+      - name: terraform apply
+        run: terraform apply -input=false -auto-approve -var="image_tag=${{ github.sha }}"
+      - id: out
+        name: Adresse
+        run: echo "url=$(terraform output -raw url)" >> "$GITHUB_OUTPUT"

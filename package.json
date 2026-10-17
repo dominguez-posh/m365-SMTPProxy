@@ -1,0 +1,26 @@
+{
+  "name": "m365-smtpproxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "M365 SMTP Proxy: SMTP-Relay über Microsoft Graph mit optionalem Verwaltungsserver.",
+  "type": "module",
+  "scripts": {
+    "dev": "node build.mjs --serve",
+    "build": "node build.mjs",
+    "start": "node server/dist/server.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p server",
+    "test:server": "node tools/test-server.mjs",
+    "reset-password": "node server/dist/server.mjs reset-password"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "esbuild": "0.28.2",
+    "typescript": "^5.9.0"
+  }
+}
