@@ -459,7 +459,8 @@ public partial class MainWindow : Window
 
     void LoadLog()
     {
-        if (LogDate is null || LogKind is null) return;
+        // events of the controls fire while the window is still being built
+        if (LogDate is null || LogKind is null || LogGrid is null) return;
         var day = LogDate.SelectedDate ?? DateTime.Today;
         _logRows = LogKind.SelectedIndex == 1
             ? Logs.Service.ReadDay(day).Reverse().Select(e => new LogRow(e.Time.LocalDateTime.ToString("T"), e.Level, "", "", "", e.Message)).ToList()
@@ -481,6 +482,7 @@ public partial class MainWindow : Window
 
     void ApplyLogFilter()
     {
+        if (LogGrid is null) return;
         var f = LogFilter?.Text.Trim() ?? "";
         LogGrid.ItemsSource = f.Length == 0 ? _logRows : _logRows.Where(r =>
             $"{r.Event} {r.Client} {r.From} {r.To} {r.Detail}".Contains(f, StringComparison.OrdinalIgnoreCase)).ToList();
